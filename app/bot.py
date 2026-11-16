@@ -39,19 +39,16 @@ PANEL_TEXT = (
 
 
 @router.message(Command("holidays"), F.chat.type.in_(GROUPS))
-async def holidays_panel(message: Message):
+async def holidays_panel(message: Message, db, settings, username: str):
     bot = message.bot
     if not message.from_user:
         return
     member = await bot.get_chat_member(message.chat.id, message.from_user.id)
     if member.status not in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}:
         return
-    db = bot._holidays_db
-    cfg = bot._holidays_settings
     await db.ensure_chat(message.chat.id, message.chat.title or "Наш чат",
-                         cfg.default_timezone, cfg.default_birthday_time)
+                         settings.default_timezone, settings.default_birthday_time)
     chat = await db.get_chat(message.chat.id)
-    username = bot._holidays_username
     keyboard = panel_markup(username, message.chat.id)
     panel_id = chat.get("panel_message_id")
     if panel_id:
@@ -70,8 +67,7 @@ async def holidays_panel(message: Message):
 
 
 @router.message(CommandStart(), F.chat.type == ChatType.PRIVATE)
-async def private_start(message: Message):
-    cfg = message.bot._holidays_settings
+async def private_start(message: Message, settings):
     await message.answer(
         "🎉 <b>Праздники нашего чата</b>\n\n"
         "Открой приложение из закреплённой панели своей группы, "
@@ -80,18 +76,16 @@ async def private_start(message: Message):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✨ Открыть приложение",
-                                 web_app=WebAppInfo(url=cfg.base_url))
+                                 web_app=WebAppInfo(url=settings.base_url))
         ]]),
     )
 
 
 @router.my_chat_member(F.chat.type.in_(GROUPS))
-async def bot_membership(event: ChatMemberUpdated):
-    db = event.bot._holidays_db
+async def bot_membership(event: ChatMemberUpdated, db, settings):
     status = event.new_chat_member.status
     if status in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER}:
-        cfg = event.bot._holidays_settings
         await db.ensure_chat(event.chat.id, event.chat.title or "Наш чат",
-                             cfg.default_timezone, cfg.default_birthday_time)
+                             settings.default_timezone, settings.default_birthday_time)
     elif status in {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}:
         await db.set_chat_active(event.chat.id, False)

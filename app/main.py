@@ -27,10 +27,6 @@ async def lifespan(app: FastAPI):
     bot = Bot(settings.bot_token)
     try:
         info = await bot.get_me()
-        # Shared read-only app resources for aiogram handlers; no global state between users.
-        bot._holidays_db = db
-        bot._holidays_settings = settings
-        bot._holidays_username = info.username
         app.state.db = db
         app.state.bot = bot
         app.state.settings = settings
@@ -44,6 +40,9 @@ async def lifespan(app: FastAPI):
             )
         )
         dp = Dispatcher()
+        dp["db"] = db
+        dp["settings"] = settings
+        dp["username"] = info.username
         dp.include_router(bot_router)
         poll_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
         schedule_task = asyncio.create_task(

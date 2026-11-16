@@ -1,5 +1,5 @@
 """Mini App HTTP API. Never trust a user ID or chat ID supplied by the client."""
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -108,7 +108,7 @@ async def index():
 async def bootstrap(ctx=Depends(context)):
     chat = ctx["chat"]
     user = ctx["user"]
-    current = date.today()
+    current = datetime.now(ZoneInfo(chat["tz"])).date()
     birthdays = await ctx["db"].get_visible_birthdays(chat["chat_id"])
     for item in birthdays:
         item["days_until"] = days_until(item["day"], item["month"], current)
