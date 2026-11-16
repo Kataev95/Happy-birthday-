@@ -78,7 +78,8 @@ async def context(
     if not is_current_member(member):
         raise HTTPException(403, "You are not a member of this chat")
     is_admin = member.status in {ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR}
-    return {"user": user, "chat": chat, "admin": is_admin, "db": db}
+    return {"user": user, "chat": chat, "admin": is_admin, "db": db,
+            "bot": request.app.state.bot}
 
 
 def birthday_public(row):

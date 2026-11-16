@@ -25,7 +25,7 @@ def panel_markup(username: str, chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎂 Мой день рождения", url=app_link(username, chat_id, "b"))],
         [InlineKeyboardButton(text="📅 Календарь", url=app_link(username, chat_id, "c"))],
-        [InlineKeyboardButton(text="🎄 Желания (скоро)", url=app_link(username, chat_id, "w"))],
+        [InlineKeyboardButton(text="🎄 Новогодние желания", url=app_link(username, chat_id, "w"))],
     ])
 
 
@@ -33,7 +33,7 @@ PANEL_TEXT = (
     "🎉 <b>ПРАЗДНИКИ НАШЕГО ЧАТА</b>\n\n"
     "🎂 Сохрани день рождения, чтобы друзья не забыли поздравить!\n"
     "📅 Посмотри ближайшие праздники в календаре.\n"
-    "🎄 Новогодние желания и подарки появятся в следующем обновлении.\n\n"
+    "🎄 Составь список желаний и укажи удобный ПВЗ по желанию.\n\n"
     "🔕 <i>Без лишних сообщений: всё управление внутри приложения.</i>"
 )
 
@@ -72,7 +72,7 @@ async def private_start(message: Message, settings):
         "🎉 <b>Праздники нашего чата</b>\n\n"
         "Открой приложение из закреплённой панели своей группы, "
         "чтобы сохранить день рождения и посмотреть календарь.\n\n"
-        "🎄 Новогодние желания добавим на следующем этапе.",
+        "🎄 Новогодние желания уже доступны через праздничную панель чата.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✨ Открыть приложение",

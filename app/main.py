@@ -15,6 +15,7 @@ from app.bot import router as bot_router
 from app.config import Settings
 from app.db import Database
 from app.scheduler import scheduler_loop
+from app.wishes import router as wishes_router, initialize as initialize_wishes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
     settings = Settings.from_env()
     db = Database(settings.database_path)
     await db.connect()
+    await initialize_wishes(db)
     bot = Bot(settings.bot_token)
     try:
         info = await bot.get_me()
@@ -67,6 +69,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(api_router)
+app.include_router(wishes_router)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
