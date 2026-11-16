@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#131123">
+  <meta name="description" content="Праздники чата: дни рождения и календарь">
+  <title>Праздники • Happy Birthday</title>
+  <link rel="stylesheet" href="/static/style.css?v=1">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/static/app.js?v=1" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+  <div class="shell" id="shell">
+    <header class="header">
+      <div class="brandmark" aria-hidden="true">✦</div>
+      <div class="brand-text"><span class="eyebrow">HAPPY BIRTHDAY</span><strong>Праздники <em>нашего чата</em></strong></div>
+      <button class="icon-btn avatar-button" id="avatar" aria-label="Профиль">🎈</button>
+    </header>
+
+    <main id="main" class="main">
+      <div id="notice" class="notice" role="alert" hidden></div>
+
+      <section class="page active" id="page-home" aria-label="Главная">
+        <div class="welcome-row">
+          <div><span class="eyebrow">ДАВАЙ ПРАЗДНОВАТЬ ВМЕСТЕ</span><h1 id="welcome">Привет! <span class="hi">✌️</span></h1>
+            <p class="muted" id="chat-name">Загружаем ваш чат…</p></div>
+          <div class="sparkle" aria-hidden="true">✨</div>
+        </div>
+        <div class="hero">
+          <div class="hero-shine"></div>
+          <div class="hero-top"><span class="glass-pill">🎂 ТВОЙ ОСОБЕННЫЙ ДЕНЬ</span><span class="hero-icon">🎈</span></div>
+          <div class="hero-main" id="hero-text">Скоро станет известно,<br>когда твой праздник!</div>
+          <p id="hero-caption">Добавь дату рождения один раз</p>
+          <button id="hero-action" class="hero-action">Указать день рождения <span>↗</span></button>
+          <div class="hero-decor" aria-hidden="true">🎁</div>
+        </div>
+
+        <div class="section-title"><h2>Праздничный уголок</h2><span class="section-flair">✳</span></div>
+        <div class="feature-grid">
+          <button class="feature feature-birthday" data-go="birthday">
+            <span class="feature-emoji">🎂</span><span class="feature-title">Мой день<br>рождения</span>
+            <span class="feature-note">Дата и настройки</span><span class="feature-arrow">↗</span>
+          </button>
+          <button class="feature feature-calendar" data-go="calendar">
+            <span class="feature-emoji">🗓️</span><span class="feature-title">Календарь<br>праздников</span>
+            <span class="feature-note">Ближайшие даты</span><span class="feature-arrow">↗</span>
+          </button>
+        </div>
+        <div class="upcoming-head"><h2>На горизонте <span>✦</span></h2><button class="text-button" data-go="calendar">Все даты →</button></div>
+        <div class="upcoming-list" id="upcoming"><div class="empty-mini">Скоро здесь появятся именинники ✨</div></div>
+
+        <button class="wish-teaser" data-go="wishes"><span class="wish-illustration">🎄</span><span><strong>Новогодние желания</strong><small>Подарки, мечты и немного волшебства</small></span><span class="wish-chevron">→</span></button>
+        <button class="admin-link" id="admin-link" data-go="settings" hidden>⚙️ Настройки группы <span>→</span></button>
+      </section>
+
+      <section class="page" id="page-birthday" aria-label="Мой день рождения">
+        <div class="page-heading"><span class="eyebrow">ТОЛЬКО ТВОЙ ДЕНЬ</span><h1>Мой день рождения <span>🎂</span></h1><p class="muted">Один раз сохрани дату — поздравление появится в чате автоматически.</p></div>
+        <div class="form-card">
+          <div class="form-top"><div class="form-icon">🧁</div><div><h2>Когда твой праздник?</h2><p>Укажи день и месяц</p></div></div>
+          <form id="birthday-form">
+            <div class="field-row">
+              <label class="field">День<select id="day" required aria-label="День рождения"><option value="">Выбери день</option></select></label>
+              <label class="field">Месяц<select id="month" required aria-label="Месяц рождения"><option value="">Выбери месяц</option></select></label>
+            </div>
+            <label class="field field-year">Год рождения <span class="optional">необязательно</span>
+              <input id="year" type="number" min="1900" max="2100" inputmode="numeric" placeholder="Например, 1998">
+            </label>
+            <div class="divider"></div>
+            <div class="form-section-title">Как тебя поздравлять</div>
+            <label class="toggle-row"><span><b>🎉 Поздравление в чате</b><small>Бот поздравит тебя в этот день</small></span><input id="celebrate" type="checkbox" checked><i></i></label>
+            <label class="toggle-row"><span><b>📅 Показывать в календаре</b><small>Участники увидят дату рождения</small></span><input id="visible" type="checkbox" checked><i></i></label>
+            <label class="toggle-row"><span><b>🎈 Показывать возраст</b><small>Только если указан год рождения</small></span><input id="show-age" type="checkbox"><i></i></label>
+            <button class="primary-btn" id="save-birthday" type="submit">💜 Сохранить мой праздник</button>
+            <button class="danger-btn" id="delete-birthday" type="button" hidden>Удалить мою дату</button>
+          </form>
+        </div>
+        <p class="privacy-hint">🔒 Ты можешь изменить дату или удалить её в любой момент. Год рождения указывать необязательно.</p>
+      </section>
+
+      <section class="page" id="page-calendar" aria-label="Календарь">
+        <div class="page-heading"><span class="eyebrow">НИКОГО НЕ ЗАБУДЕМ</span><h1>Календарь <span>📅</span></h1><p class="muted">Ближайшие дни рождения участников нашего чата.</p></div>
+        <div class="stat-card"><span>🎊</span><div><strong id="calendar-count">0</strong><small>участников в календаре</small></div><div class="stat-decoration">✦</div></div>
+        <div class="section-title"><h2>Предстоящие праздники</h2></div>
+        <div id="calendar-list" class="calendar-list"><div class="empty-mini">Пока никто не добавил дату.</div></div>
+        <div class="calendar-footnote">✨ 29 февраля поздравляем 28 февраля в невисокосные годы.</div>
+      </section>
+
+      <section class="page" id="page-wishes" aria-label="Желания">
+        <div class="page-heading"><span class="eyebrow">СКОРО В ПРИЛОЖЕНИИ</span><h1>Новогодние желания <span>🎄</span></h1></div>
+        <div class="coming-card">
+          <div class="coming-emoji">🎁</div>
+          <span class="glass-pill">СЛЕДУЮЩИЙ ЭТАП</span>
+          <h2>Мечты любят<br>сбываться</h2>
+          <p>Совсем скоро здесь можно будет добавлять желания, ссылки на подарки, а по желанию — удобные пункты выдачи Wildberries и Ozon.</p>
+          <div class="coming-tags"><span>🛍️ Ссылки на товары</span><span>📦 ПВЗ по желанию</span><span>🔒 Приватность</span></div>
+        </div>
+        <p class="privacy-hint">Без «Тайного Санты» и без публикаций желаний в общий чат.</p>
+      </section>
+
+      <section class="page" id="page-settings" aria-label="Настройки группы">
+        <div class="page-heading"><span class="eyebrow">ТОЛЬКО ДЛЯ АДМИНИСТРАТОРОВ</span><h1>Настройки <span>⚙️</span></h1><p class="muted">Выбирай, когда и как бот поздравляет участников.</p></div>
+        <div class="form-card">
+          <form id="settings-form">
+            <label class="field">Часовой пояс
+              <input id="timezone" list="timezone-options" placeholder="Europe/Moscow" required>
+              <datalist id="timezone-options">
+                <option value="Europe/Moscow"><option value="Europe/Helsinki">
+                <option value="Asia/Almaty"><option value="Asia/Yekaterinburg">
+                <option value="Europe/Istanbul"><option value="UTC">
+              </datalist>
+            </label>
+            <label class="field">Время поздравления <input type="time" id="greeting-time" required></label>
+            <label class="toggle-row"><span><b>📌 Закреплять поздравления</b><small>Снять закрепление после полуночи</small></span><input id="pin-enabled" type="checkbox" checked><i></i></label>
+            <button type="submit" id="save-settings" class="primary-btn">Сохранить настройки</button>
+          </form>
+        </div>
+        <p class="privacy-hint">💡 Для закрепления бот должен быть администратором с правом закреплять сообщения.</p>
+      </section>
+    </main>
+
+    <nav class="tabbar" aria-label="Навигация">
+      <button class="tab active" data-go="home"><span>⌂</span><small>Главная</small></button>
+      <button class="tab" data-go="birthday"><span>🎂</span><small>Мой ДР</small></button>
+      <button class="tab" data-go="calendar"><span>🗓️</span><small>Календарь</small></button>
+      <button class="tab" data-go="wishes"><span>🎁</span><small>Желания</small></button>
+    </nav>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </div>
+</body>
+</html>
