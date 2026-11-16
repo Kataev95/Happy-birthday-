@@ -6,9 +6,9 @@
   <meta name="theme-color" content="#131123">
   <meta name="description" content="Праздники чата: дни рождения и календарь">
   <title>Праздники • Happy Birthday</title>
-  <link rel="stylesheet" href="/static/style.css?v=1">
+  <link rel="stylesheet" href="/static/style.css?v=2">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/static/app.js?v=1" defer></script>
+  <script src="/static/app.js?v=2" defer></script>
 </head>
 <body>
   <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
@@ -87,17 +87,90 @@
         <div class="calendar-footnote">✨ 29 февраля поздравляем 28 февраля в невисокосные годы.</div>
       </section>
 
-      <section class="page" id="page-wishes" aria-label="Желания">
-        <div class="page-heading"><span class="eyebrow">СКОРО В ПРИЛОЖЕНИИ</span><h1>Новогодние желания <span>🎄</span></h1></div>
-        <div class="coming-card">
-          <div class="coming-emoji">🎁</div>
-          <span class="glass-pill">СЛЕДУЮЩИЙ ЭТАП</span>
-          <h2>Мечты любят<br>сбываться</h2>
-          <p>Совсем скоро здесь можно будет добавлять желания, ссылки на подарки, а по желанию — удобные пункты выдачи Wildberries и Ozon.</p>
-          <div class="coming-tags"><span>🛍️ Ссылки на товары</span><span>📦 ПВЗ по желанию</span><span>🔒 Приватность</span></div>
+      <section class="page" id="page-wishes" aria-label="Новогодние желания">
+        <div class="page-heading wish-page-heading">
+          <span class="eyebrow">МЕЧТЫ ЛЮБЯТ СБЫВАТЬСЯ</span>
+          <h1>Новогодние желания <span>🎄</span></h1>
+          <p class="muted">Расскажи друзьям, о чём мечтаешь. А кто захочет — подарит!</p>
         </div>
-        <p class="privacy-hint">Без «Тайного Санты» и без публикаций желаний в общий чат.</p>
+        <div class="wish-banner">
+          <span class="wish-banner-emoji">🎁</span>
+          <div><strong>Пусть случится волшебство ✨</strong>
+            <small>Списки желаний доступны только участникам этого чата.</small></div>
+        </div>
+        <div class="wish-tabs" role="tablist" aria-label="Категория желаний">
+          <button class="wish-tab selected" data-wish-tab="mine" type="button" aria-selected="true">💜 Мои желания</button>
+          <button class="wish-tab" data-wish-tab="friends" type="button" aria-selected="false">🎁 Желания друзей</button>
+        </div>
+
+        <div id="wish-mine-panel">
+          <div class="wish-toolbar"><h2>Мой список <small id="wish-my-counter">0 из 12</small></h2>
+            <button class="mini-action" id="wish-add-toggle" type="button">＋ Добавить</button></div>
+
+          <form class="wish-form" id="wish-form" hidden>
+            <div class="wish-form-top"><strong id="wish-form-title">✨ Новое желание</strong>
+              <button type="button" class="light-close" id="wish-form-close" aria-label="Закрыть">✕</button></div>
+            <label class="field">Что мечтаешь получить?
+              <input id="wish-title" maxlength="100" minlength="2" required placeholder="Например, беспроводные наушники" autocomplete="off">
+            </label>
+            <label class="field">Немного о подарке <span class="optional">необязательно</span>
+              <textarea id="wish-description" rows="3" maxlength="600" placeholder="Расскажи друзьям, почему ты об этом мечтаешь…"></textarea>
+            </label>
+            <label class="field">Ссылка на товар Wildberries / Ozon <span class="optional">необязательно</span>
+              <input id="wish-url" type="url" maxlength="600" inputmode="url" placeholder="https://www.ozon.ru/...">
+            </label>
+            <label class="field">Ссылка на фото подарка <span class="optional">необязательно</span>
+              <input id="wish-image" type="url" maxlength="600" inputmode="url" placeholder="https://.../photo.jpg">
+            </label>
+            <label class="field">Примерная цена в ₽ <span class="optional">необязательно</span>
+              <input id="wish-price" type="number" min="1" max="10000000" inputmode="numeric" placeholder="Например, 2500">
+            </label>
+            <button class="primary-btn" id="wish-submit" type="submit">🎄 Сохранить желание</button>
+          </form>
+
+          <div id="my-wish-list" class="wish-card-list">
+            <div class="empty-mini">Загружаем новогодние желания…</div>
+          </div>
+
+          <div class="pickup-section">
+            <div class="pickup-title"><span class="pickup-icon">📦</span>
+              <div><h2>Куда отправить подарок?</h2>
+                <p>Укажи удобный пункт выдачи, если хочешь.</p></div></div>
+            <p class="pickup-privacy">🔒 Адрес ПВЗ не публикуется в чате. Его увидит только участник, который выбрал твой подарок.</p>
+            <button class="pickup-edit" id="pickup-edit" type="button">📍 Настроить пункты выдачи <span>→</span></button>
+            <form id="pickup-form" class="pickup-form" hidden>
+              <label class="field"><span class="pickup-label">🟣 ПВЗ Wildberries</span>
+                <textarea id="pickup-wb" maxlength="220" rows="2" placeholder="Город, улица и адрес пункта выдачи"></textarea>
+              </label>
+              <label class="field"><span class="pickup-label">🔵 ПВЗ Ozon</span>
+                <textarea id="pickup-ozon" maxlength="220" rows="2" placeholder="Город, улица и адрес пункта выдачи"></textarea>
+              </label>
+              <p class="pickup-help">Указывай только адрес пункта выдачи, не свой домашний адрес. Можно оставить оба поля пустыми.</p>
+              <button class="primary-btn" id="pickup-submit" type="submit">💜 Сохранить адреса ПВЗ</button>
+            </form>
+          </div>
+        </div>
+
+        <div id="wish-friends-panel" hidden>
+          <div class="wish-toolbar"><h2>Мечты друзей <small id="wish-friends-counter">0</small></h2>
+            <button class="mini-action soft" id="wish-refresh" type="button" aria-label="Обновить желания">↻ Обновить</button></div>
+          <div id="friends-wish-list" class="wish-card-list"><div class="empty-mini">Загружаем подарки…</div></div>
+          <p class="privacy-hint">🎀 Бронирование скрывает подарок от других дарителей, а владелец желания не узнает, кто его выбрал. Заказ оформляется самостоятельно на маркетплейсе.</p>
+        </div>
+        <p class="privacy-hint">🔕 Никаких автоматических сообщений о желаниях в общем чате.</p>
       </section>
+
+      <div class="wish-modal-backdrop" id="wish-delivery-modal" hidden role="dialog" aria-modal="true" aria-label="Адрес получения подарка">
+        <div class="wish-modal">
+          <button type="button" id="wish-delivery-close" class="light-close wish-modal-close" aria-label="Закрыть">✕</button>
+          <span class="wish-modal-emoji">🎁</span>
+          <h2 id="wish-delivery-heading">Подарок выбран!</h2>
+          <p class="muted" id="wish-delivery-explain">Адреса пунктов выдачи получателя:</p>
+          <div id="wish-delivery-points" class="wish-delivery-points"></div>
+          <p class="pickup-help" id="wish-delivery-note"></p>
+          <button type="button" class="primary-btn" id="wish-delivery-done">Готово ✨</button>
+        </div>
+      </div>
 
       <section class="page" id="page-settings" aria-label="Настройки группы">
         <div class="page-heading"><span class="eyebrow">ТОЛЬКО ДЛЯ АДМИНИСТРАТОРОВ</span><h1>Настройки <span>⚙️</span></h1><p class="muted">Выбирай, когда и как бот поздравляет участников.</p></div>
