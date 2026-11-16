@@ -20,7 +20,12 @@ class Settings:
     def from_env(cls) -> "Settings":
         load_dotenv()
         token = os.getenv("BOT_TOKEN", "").strip()
+        # Bothost supplies DOMAIN automatically, and it may omit the scheme.
+        # An explicitly configured BASE_URL always takes precedence.
+        domain = os.getenv("DOMAIN", "").strip().rstrip("/")
         url = os.getenv("BASE_URL", "").strip().rstrip("/")
+        if not url and domain:
+            url = domain if domain.startswith("https://") else f"https://{domain}"
         if not token or "REPLACE_" in token:
             raise RuntimeError("Set BOT_TOKEN in .env")
         parsed = urlparse(url)
@@ -33,7 +38,7 @@ class Settings:
         return cls(
             bot_token=token,
             base_url=url,
-            database_path=os.getenv("DATABASE_PATH", "data/holidays.sqlite3"),
+            database_path=os.getenv("DATABASE_PATH") or os.path.join(os.getenv("DATA_DIR", "data"), "holidays.sqlite3"),
             default_timezone=timezone,
             default_birthday_time=hhmm,
             check_interval_seconds=max(15, int(os.getenv("CHECK_INTERVAL_SECONDS", "45"))),

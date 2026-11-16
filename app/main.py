@@ -1,6 +1,7 @@
 """Single-process FastAPI + aiogram polling + daily job; no separate worker required."""
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -67,3 +68,12 @@ app = FastAPI(
 )
 app.include_router(api_router)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+
+
+if __name__ == "__main__":
+    # BotHost starts the package with `python -m app.main`.
+    # The built-in process must serve HTTP instead of exiting immediately.
+    import uvicorn
+
+    port = int(os.getenv("PORT", "3000"))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, proxy_headers=True)
