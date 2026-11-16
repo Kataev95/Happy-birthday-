@@ -62,3 +62,17 @@ def test_database_claims_and_privacy(tmp_path):
         finally:
             await db.close()
     asyncio.run(run())
+
+
+
+def test_health_url_opened_as_main_mini_app():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+    assert client.get("/health").json() == {"ok": True, "service": "happy-birthday"}
+    response = client.get("/health?tgWebAppStartParam=c-1004417994455_b")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert 'id="shell"' in response.text
+    assert client.get("/health?tgWebAppStartParam=nonsense").json()["ok"] is True
+    assert client.get("/favicon.ico").status_code == 204

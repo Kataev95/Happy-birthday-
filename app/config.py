@@ -31,6 +31,10 @@ class Settings:
         parsed = urlparse(url)
         if parsed.scheme != "https" or not parsed.netloc:
             raise RuntimeError("BASE_URL must be a public HTTPS URL")
+        # A common setup mistake is to copy /health into BASE_URL after
+        # checking that URL in the browser; menu buttons must open the UI.
+        if parsed.path == "/health":
+            url = parsed._replace(path="", query="", fragment="").geturl()
         timezone = os.getenv("DEFAULT_TIMEZONE", "Europe/Moscow")
         ZoneInfo(timezone)
         hhmm = os.getenv("DEFAULT_BIRTHDAY_TIME", "09:00")

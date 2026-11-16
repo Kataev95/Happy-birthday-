@@ -1,12 +1,13 @@
 """Mini App HTTP API. Never trust a user ID or chat ID supplied by the client."""
 from datetime import date, datetime
 from pathlib import Path
+import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramAPIError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from app.auth import AuthError, verify_init_data
@@ -94,7 +95,17 @@ def birthday_public(row):
 
 
 @router.get("/health")
-async def health():
+async def health(request: Request):
+    # Telegram opens the Main App at the exact URL set in BotFather.
+    # If /health was mistakenly set there, group deep links land on the JSON
+    # health endpoint rather than on the Mini App. Serve the real UI for these
+    # group start parameters while preserving the monitoring endpoint.
+    start_param = request.query_params.get("tgWebAppStartParam", "")
+    if re.fullmatch(r"c-\d+(?:_[bcw])?", start_param):
+        return FileResponse(
+            Path(__file__).parent / "static" / "index.html",
+            headers={"Cache-Control": "no-store"},
+        )
     return {"ok": True, "service": "happy-birthday"}
 
 
@@ -154,3 +165,9 @@ async def save_settings(payload: ChatSettingsPayload, ctx=Depends(context)):
     await ctx["db"].set_settings(ctx["chat"]["chat_id"], payload.tz,
                                  payload.greeting_time, payload.pin_enabled)
     return {"ok": True}
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    # Browsers request this automatically; no branded icon has been added yet.
+    return Response(status_code=204)
