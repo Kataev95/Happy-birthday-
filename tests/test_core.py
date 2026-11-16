@@ -76,3 +76,15 @@ def test_health_url_opened_as_main_mini_app():
     assert 'id="shell"' in response.text
     assert client.get("/health?tgWebAppStartParam=nonsense").json()["ok"] is True
     assert client.get("/favicon.ico").status_code == 204
+
+
+def test_private_start_has_add_to_group_button():
+    from app.bot import group_invite_link, private_start_markup
+    assert group_invite_link("drmetr_bot") == (
+        "https://t.me/drmetr_bot?startgroup&admin=pin_messages"
+    )
+    markup = private_start_markup("drmetr_bot", "https://example.org")
+    add_button = markup.inline_keyboard[0][0]
+    assert add_button.text == "➕ Добавить в группу"
+    assert add_button.url == group_invite_link("drmetr_bot")
+    assert markup.inline_keyboard[1][0].web_app.url == "https://example.org"

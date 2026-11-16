@@ -21,6 +21,24 @@ def app_link(bot_username: str, chat_id: int, tab: str = "") -> str:
     return f"https://t.me/{bot_username}?startapp=c{chat_id}{postfix}"
 
 
+def group_invite_link(bot_username: str) -> str:
+    """Open Telegram's group picker, requesting only the pin right we need."""
+    return f"https://t.me/{bot_username.lstrip('@')}?startgroup&admin=pin_messages"
+
+
+def private_start_markup(username: str, app_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="➕ Добавить в группу",
+            url=group_invite_link(username),
+        )],
+        [InlineKeyboardButton(
+            text="✨ Открыть приложение",
+            web_app=WebAppInfo(url=app_url),
+        )],
+    ])
+
+
 def panel_markup(username: str, chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎂 Мой день рождения", url=app_link(username, chat_id, "b"))],
@@ -67,17 +85,19 @@ async def holidays_panel(message: Message, db, settings, username: str):
 
 
 @router.message(CommandStart(), F.chat.type == ChatType.PRIVATE)
-async def private_start(message: Message, settings):
+async def private_start(message: Message, settings, username: str):
     await message.answer(
-        "🎉 <b>Праздники нашего чата</b>\n\n"
-        "Открой приложение из закреплённой панели своей группы, "
-        "чтобы сохранить день рождения и посмотреть календарь.\n\n"
-        "🎄 Новогодние желания уже доступны через праздничную панель чата.",
+        "🎉 <b>Днюхометр — праздники вашего чата!</b>\n\n"
+        "🎂 Сохраняю дни рождения участников и поздравляю их автоматически.\n"
+        "📅 Показываю ближайшие праздники в календаре.\n"
+        "🎄 Помогаю делиться новогодними желаниями и подарками.\n\n"
+        "👇 <b>Нажми «Добавить в группу»</b>, выбери свой чат и "
+        "разреши закреплять сообщения, чтобы я мог закреплять поздравления.\n\n"
+        "После добавления администратор отправляет в группе "
+        "<code>/holidays</code> — появится праздничная панель с Mini App.\n\n"
+        "🔕 Без лишних сообщений в группе.",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✨ Открыть приложение",
-                                 web_app=WebAppInfo(url=settings.base_url))
-        ]]),
+        reply_markup=private_start_markup(username, settings.base_url),
     )
 
 
