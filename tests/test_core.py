@@ -88,3 +88,17 @@ def test_private_start_has_add_to_group_button():
     assert add_button.text == "➕ Добавить в группу"
     assert add_button.url == group_invite_link("drmetr_bot")
     assert markup.inline_keyboard[1][0].web_app.url == "https://example.org"
+
+
+def test_birthday_greeting_has_group_scoped_registration_button():
+    from app.scheduler import birthday_markup
+    from app.bot import app_link
+    markup = birthday_markup("drmetr_bot", -1004417994455)
+    assert len(markup.inline_keyboard) == 1
+    button = markup.inline_keyboard[0][0]
+    assert button.text == "🎂 Добавить свой ДР"
+    assert button.url == app_link("drmetr_bot", -1004417994455, "b")
+    assert button.url == (
+        "https://t.me/drmetr_bot?startapp=c-1004417994455_b"
+    )
+    assert button.callback_data is None

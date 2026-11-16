@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, time, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram.enums import ChatMemberStatus
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.exceptions import TelegramAPIError
 
+from app.bot import app_link
 from app.dates import day_of_observance
 
 log = logging.getLogger(__name__)
@@ -37,7 +39,17 @@ def greeting_text(person: dict, current_year: int) -> str:
     )
 
 
-async def process_birthdays(db, bot) -> None:
+def birthday_markup(bot_username: str, chat_id: int) -> InlineKeyboardMarkup:
+    """A group-scoped Mini App link: registering from this greeting edits this chat."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="🎂 Добавить свой ДР",
+            url=app_link(bot_username, chat_id, "b"),
+        )
+    ]])
+
+
+async def process_birthdays(db, bot, bot_username: str) -> None:
     for chat in await db.get_chats():
         try:
             now_local = datetime.now(ZoneInfo(chat["tz"]))
@@ -62,6 +74,7 @@ async def process_birthdays(db, bot) -> None:
                         chat_id=chat["chat_id"],
                         text=greeting_text(person, now_local.year),
                         parse_mode="HTML",
+                        reply_markup=birthday_markup(bot_username, chat["chat_id"]),
                     )
                     # Record delivery immediately; pin errors must NOT result in duplicate greetings.
                     await db.sent_delivery(chat["chat_id"], person["user_id"], now_local.year,
@@ -109,10 +122,10 @@ async def process_unpins(db, bot):
             )
 
 
-async def scheduler_loop(db, bot, interval: int = 45):
+async def scheduler_loop(db, bot, bot_username: str, interval: int = 45):
     while True:
         try:
-            await process_birthdays(db, bot)
+            await process_birthdays(db, bot, bot_username)
             await process_unpins(db, bot)
         except Exception:
             log.exception("Unexpected scheduler error")

@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
         dp.include_router(bot_router)
         poll_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
         schedule_task = asyncio.create_task(
-            scheduler_loop(db, bot, settings.check_interval_seconds)
+            scheduler_loop(db, bot, info.username, settings.check_interval_seconds)
         )
         log.info("Happy Birthday started as @%s", info.username)
         try:
