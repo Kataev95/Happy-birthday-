@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS birthday_deliveries (
   unpinned_at TEXT,
   PRIMARY KEY(chat_id, user_id, occurrence_year)
 );
+CREATE TABLE IF NOT EXISTS quick_menus (
+  chat_id INTEGER PRIMARY KEY REFERENCES chats(chat_id) ON DELETE CASCADE,
+  message_id INTEGER NOT NULL,
+  expires_at TEXT NOT NULL
+);
 """
 
 
@@ -188,4 +193,35 @@ class Database:
             """UPDATE birthday_deliveries SET unpinned_at=?
                WHERE chat_id=? AND user_id=? AND occurrence_year=?""",
             (datetime.now(timezone.utc).isoformat(), chat_id, user_id, year),
+        )
+
+
+    async def replace_quick_menu(self, chat_id: int, message_id: int, expires_at: str) -> int | None:
+        """Atomically store the only temporary menu in this chat; return the old ID."""
+        async with self.lock:
+            async with self.connection.execute(
+                "SELECT message_id FROM quick_menus WHERE chat_id=?", (chat_id,)
+            ) as cur:
+                old = await cur.fetchone()
+            await self.connection.execute(
+                """INSERT INTO quick_menus(chat_id,message_id,expires_at)
+                   VALUES(?,?,?)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                     message_id=excluded.message_id, expires_at=excluded.expires_at""",
+                (chat_id, message_id, expires_at),
+            )
+            await self.connection.commit()
+            return old["message_id"] if old else None
+
+    async def due_quick_menus(self, current_utc: str):
+        return await self.all(
+            "SELECT chat_id, message_id FROM quick_menus WHERE expires_at<=?",
+            (current_utc,),
+        )
+
+    async def forget_quick_menu(self, chat_id: int, message_id: int):
+        # Guard against a concurrent new /holidays replacing this menu.
+        await self.execute(
+            "DELETE FROM quick_menus WHERE chat_id=? AND message_id=?",
+            (chat_id, message_id),
         )

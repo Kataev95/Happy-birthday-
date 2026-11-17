@@ -102,3 +102,64 @@ def test_birthday_greeting_has_group_scoped_registration_button():
         "https://t.me/drmetr_bot?startapp=c-1004417994455_b"
     )
     assert button.callback_data is None
+
+
+def test_repeatable_holidays_menu_is_group_scoped_and_expires(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from app.bot import holidays_panel, QUICK_MENU_TEXT, PANEL_TEXT
+    from app.scheduler import process_quick_menus
+
+    class FakeBot:
+        def __init__(self):
+            self.deleted = []
+        async def get_chat_member(self, chat_id, user_id):
+            return SimpleNamespace(status="administrator" if user_id == 1 else "member")
+        async def delete_message(self, chat_id, message_id):
+            self.deleted.append((chat_id, message_id))
+
+    class FakeMessage:
+        def __init__(self, bot, user_id, sent):
+            self.bot = bot
+            self.from_user = SimpleNamespace(id=user_id)
+            self.chat = SimpleNamespace(id=-1002233, title="Тест праздников")
+            self.sent = sent
+        async def answer(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return SimpleNamespace(message_id=100 + len(self.sent))
+
+    async def run():
+        db = Database(str(tmp_path / "birthday.sqlite"))
+        await db.connect()
+        try:
+            bot = FakeBot()
+            settings = SimpleNamespace(default_timezone="Europe/Moscow",
+                                       default_birthday_time="09:00")
+            sent = []
+            # First admin call: save a long-lived panel.
+            await holidays_panel(FakeMessage(bot, 1, sent), db, settings, "drmetr_bot")
+            chat = await db.get_chat(-1002233)
+            assert chat["panel_message_id"] == 101
+            assert sent[0][0] == PANEL_TEXT
+            # Any ordinary member can summon the menu, repeatedly.
+            await holidays_panel(FakeMessage(bot, 2, sent), db, settings, "drmetr_bot")
+            assert sent[1][0] == QUICK_MENU_TEXT
+            assert "c-1002233_b" in sent[1][1]["reply_markup"].inline_keyboard[0][0].url
+            await holidays_panel(FakeMessage(bot, 2, sent), db, settings, "drmetr_bot")
+            assert sent[2][0] == QUICK_MENU_TEXT
+            assert bot.deleted == [(-1002233, 102)]
+            assert (await db.get_chat(-1002233))["panel_message_id"] == 101
+            # New menu expires and deletes only its own message.
+            expiry = (datetime.now(timezone.utc)+timedelta(minutes=16)).isoformat()
+            assert len(await db.due_quick_menus(expiry)) == 1
+            # Use an accelerated clock by updating the expiry timestamp.
+            await db.execute("UPDATE quick_menus SET expires_at=? WHERE chat_id=?",
+                             ("2001-01-01T00:00:00+00:00",-1002233))
+            await process_quick_menus(db, bot)
+            assert (-1002233,103) in bot.deleted
+            assert (-1002233,101) not in bot.deleted
+            assert (await db.get_chat(-1002233))["panel_message_id"] == 101
+            assert await db.due_quick_menus(expiry) == []
+        finally:
+            await db.close()
+    asyncio.run(run())

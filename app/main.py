@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         app.state.settings = settings
         await bot.set_my_commands([
             BotCommand(command="start", description="Открыть праздничное приложение"),
-            BotCommand(command="holidays", description="Панель праздников в группе (администратор)"),
+            BotCommand(command="holidays", description="Вызвать кнопки праздников в группе"),
         ])
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(

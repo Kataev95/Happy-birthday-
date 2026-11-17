@@ -122,11 +122,24 @@ async def process_unpins(db, bot):
             )
 
 
+async def process_quick_menus(db, bot):
+    """Clean up only bot-created temporary menus; never touch the saved panel."""
+    now_utc = datetime.now(timezone.utc).isoformat()
+    for menu in await db.due_quick_menus(now_utc):
+        try:
+            await bot.delete_message(chat_id=menu["chat_id"], message_id=menu["message_id"])
+        except TelegramAPIError as exc:
+            log.info("Could not expire temporary menu in chat %s: %s", menu["chat_id"], exc)
+        finally:
+            await db.forget_quick_menu(menu["chat_id"], menu["message_id"])
+
+
 async def scheduler_loop(db, bot, bot_username: str, interval: int = 45):
     while True:
         try:
             await process_birthdays(db, bot, bot_username)
             await process_unpins(db, bot)
+            await process_quick_menus(db, bot)
         except Exception:
             log.exception("Unexpected scheduler error")
         await asyncio.sleep(interval)

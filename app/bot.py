@@ -1,9 +1,10 @@
 """Telegram group panel and private start; all birthdays edited in Mini App."""
 import logging
+from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.enums import ChatMemberStatus, ChatType
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -56,32 +57,57 @@ PANEL_TEXT = (
 )
 
 
+QUICK_MENU_TEXT = (
+    "🎉 <b>Днюхометр — меню праздников</b>\n\n"
+    "🎂 Добавь свой день рождения.\n"
+    "📅 Посмотри ближайшие праздники.\n"
+    "🎄 Узнай желания друзей.\n\n"
+    "✨ <i>Меню появилось по запросу и автоматически исчезнет через 15 минут.</i>"
+)
+
+
 @router.message(Command("holidays"), F.chat.type.in_(GROUPS))
 async def holidays_panel(message: Message, db, settings, username: str):
-    bot = message.bot
+    """The first admin call creates a permanent panel; every next call summons a fresh menu."""
     if not message.from_user:
         return
-    member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-    if member.status not in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}:
-        return
-    await db.ensure_chat(message.chat.id, message.chat.title or "Наш чат",
-                         settings.default_timezone, settings.default_birthday_time)
+
+    # The original panel is never deleted or moved, including when an admin pinned it.
+    await db.ensure_chat(
+        message.chat.id, message.chat.title or "Наш чат",
+        settings.default_timezone, settings.default_birthday_time
+    )
     chat = await db.get_chat(message.chat.id)
     keyboard = panel_markup(username, message.chat.id)
-    panel_id = chat.get("panel_message_id")
-    if panel_id:
+
+    if chat.get("panel_message_id") is None:
+        # Only the first permanent panel requires an admin; other participants
+        # always get a temporary menu, even if admin rights cannot be checked.
+        is_admin = False
         try:
-            await bot.edit_message_text(
-                text=PANEL_TEXT, chat_id=message.chat.id,
-                message_id=panel_id, reply_markup=keyboard, parse_mode="HTML"
-            )
+            member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
+            is_admin = member.status in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
+        except TelegramAPIError:
+            log.warning("Could not check role for permanent holidays panel in %s", message.chat.id)
+        if is_admin:
+            sent = await message.answer(PANEL_TEXT, reply_markup=keyboard, parse_mode="HTML")
+            await db.set_panel(message.chat.id, sent.message_id)
             return
-        except TelegramBadRequest as exc:
-            if "message is not modified" in str(exc).lower():
-                return
-            log.info("Previous panel cannot be updated: %s", exc)
-    sent = await message.answer(PANEL_TEXT, reply_markup=keyboard, parse_mode="HTML")
-    await db.set_panel(message.chat.id, sent.message_id)
+
+    # /holidays can be called by ANY member at ANY time, without changing
+    # the original panel. Only one transient menu is kept per chat.
+    sent = await message.answer(
+        QUICK_MENU_TEXT, reply_markup=keyboard, parse_mode="HTML"
+    )
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+    previous_id = await db.replace_quick_menu(message.chat.id, sent.message_id, expires_at)
+    if previous_id and previous_id != sent.message_id:
+        try:
+            await message.bot.delete_message(
+                chat_id=message.chat.id, message_id=previous_id
+            )
+        except TelegramAPIError as exc:
+            log.info("Could not remove old temporary menu in %s: %s", message.chat.id, exc)
 
 
 @router.message(CommandStart(), F.chat.type == ChatType.PRIVATE)
@@ -96,10 +122,13 @@ async def private_start(message: Message, settings, username: str):
         "2️⃣ Разреши боту закреплять сообщения, чтобы поздравления "
         "могли появляться в закрепе.\n"
         "3️⃣ <b>В самом групповом чате</b> отправь команду "
-        "<code>/holidays</code>. Это должен сделать администратор группы.\n\n"
+        "<code>/holidays</code>. При первом запуске это должен сделать администратор группы.\n\n"
         "✨ Бот отправит одну праздничную панель с кнопками: "
         "участники откроют Mini App, укажут свои дни рождения и желания. "
         "При желании закрепи эту панель в чате, чтобы всем было удобно.\n\n"
+        "🔄 Позже <b>любой участник</b> сможет снова написать "
+        "<code>/holidays</code>, чтобы вызвать кнопки. Повторное меню "
+        "автоматически исчезает через 15 минут.\n\n"
         "🔕 Никаких лишних сообщений в беседе.",
         parse_mode="HTML",
         reply_markup=private_start_markup(username, settings.base_url),
