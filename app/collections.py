@@ -101,6 +101,7 @@ async def initialize(db):
     async with db.lock:
         await db.connection.executescript(SCHEMA)
         await db.connection.commit()
+    await auto.initialize(db)
 
 
 def parse_amount(raw):
