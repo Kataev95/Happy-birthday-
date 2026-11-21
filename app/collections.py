@@ -701,7 +701,7 @@ async def poll_iris(db, bot, bot_id: int, token: str):
         async with httpx.AsyncClient(timeout=15) as client:
             reply = await client.get(url, params={"offset": cursor, "limit": 100})
             data = reply.json()
-        if reply.status_code == 200 and isinstance(data.get("result"), list):
+        if reply.status_code == 200 and isinstance(data, dict) and isinstance(data.get("result"), list):
             updates_status = f"OK {len(data['result'])}"
             for event in sorted(data["result"], key=lambda x: int(x["id"])):
                 if int(event["id"]) <= cursor:
@@ -879,7 +879,7 @@ async def collection_status(message: Message, db, settings, bot_id: int):
                     )
                     with_sender = sum(
                         1 for item in inbound
-                        if type(item.get("peer_id")) is int and item["peer_id"] > 0
+                        if auto.receipt_identity(item) is not None
                     )
                     lines.append(
                         f"ID отправителя доступен: {with_sender}/{len(inbound)}. "
@@ -907,6 +907,16 @@ async def collection_status(message: Message, db, settings, bot_id: int):
                         (row["id"],),
                     )
                     lines.append(f"Ожидающих переводов: {pending['n'] if pending else 0}")
+                    completed = await db.one(
+                        """SELECT COUNT(*) AS n,COALESCE(SUM(received_cents),0) AS cents
+                           FROM iris_payment_intents
+                           WHERE collection_id=? AND status='matched'""",
+                        (row["id"],),
+                    )
+                    lines.append(
+                        f"Автоматически зачтено: {completed['n']} переводов, "
+                        f"{format_sweets(completed['cents'])} 🍬."
+                    )
                 except (httpx.HTTPError, ValueError, TypeError):
                     lines.append("История Ириса: ошибка соединения")
     await message.answer("\n".join(lines), parse_mode="HTML")
