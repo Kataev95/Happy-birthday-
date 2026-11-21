@@ -199,10 +199,9 @@ def valid_match(intent, receipt):
     if sender is None or sender != intent["payer_id"]:
         return False
     comment = str(receipt.get("comment") or "").strip()
-    if comment:
-        # Don't steal an operation intended for a different purpose. Accept
-        # only our own collection tag, which is not always preserved by Iris.
-        return comment == intent.get("collection_code")
+    if comment and comment != intent.get("collection_code"):
+        # Never steal a transaction labelled for another fundraiser.
+        return False
     if not amount_matches(intent, receipt):
         return False
     ts = parsed_epoch(receipt)
