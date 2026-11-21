@@ -206,6 +206,12 @@ async def create_collection(db, chat_id: int, user, title: str, goal: int):
         ) as cursor:
             if (await cursor.fetchone())[0] >= 3:
                 raise ValueError("Можно создать не больше трёх сборов за сутки.")
+        async with db.connection.execute(
+            "SELECT COUNT(*) FROM iris_collections WHERE chat_id=? AND status='open'",
+            (chat_id,),
+        ) as cursor:
+            if (await cursor.fetchone())[0] >= 15:
+                raise ValueError("В этом чате уже 15 активных сборов.")
         cursor = await db.connection.execute(
             """INSERT INTO iris_collections
                (chat_id,owner_id,owner_name,title,goal_cents,created_at)
@@ -334,6 +340,21 @@ async def close_command(message: Message, db, bot_id: int):
 
 @router.callback_query(F.data.startswith("ic:"))
 async def collection_callback(callback: CallbackQuery, db, bot_id: int):
+    if (callback.data or "") == "ic:help":
+        if callback.message and callback.message.chat.type in GROUPS:
+            await callback.message.answer(
+                "💝 <b>Сборы ирисок прямо в чате</b>\n\n"
+                "Создать сбор может любой участник:\n"
+                "<code>/collect На свадьбу | 5000</code>\n\n"
+                "📋 Список: /collections\n"
+                "🔒 Закрыть свой: /collect_close ID\n"
+                "Администратор после сверки переводит собранное организатору.",
+                parse_mode="HTML",
+            )
+            await callback.answer()
+        else:
+            await callback.answer("Открой меню в группе.", show_alert=True)
+        return
     if not callback.message or callback.message.chat.type not in GROUPS:
         await callback.answer("Открой сбор в чате.", show_alert=True)
         return
@@ -430,7 +451,7 @@ async def ingest_event(db, event: dict) -> int | None:
             "SELECT 1 FROM iris_collection_events WHERE event_id=?", (event_id,)
         ) as cursor:
             exists = await cursor.fetchone()
-        if data and not exists and data.get("type") == "receive":
+        if isinstance(data, dict) and not exists and data.get("type") == "receive":
             comment = str(data.get("comment") or "")
             cents = inbound_cents(data.get("amount"))
             sender = data.get("peer_id")
@@ -445,7 +466,10 @@ async def ingest_event(db, event: dict) -> int | None:
                 if collection:
                     # Prevent credits for transfers predating the creation of this collection.
                     event_time = data.get("date") or event.get("date") or 0
-                    event_epoch = float(event_time)
+                    try:
+                        event_epoch = float(event_time)
+                    except (ValueError, TypeError, OverflowError):
+                        event_epoch = 0
                     if event_epoch > 10**11:
                         event_epoch /= 1000
                     created = datetime.fromisoformat(collection["created_at"]).timestamp()
