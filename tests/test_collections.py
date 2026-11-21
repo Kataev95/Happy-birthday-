@@ -63,10 +63,20 @@ def test_confirmed_receipts_and_chat_isolation(tmp_path):
             }
             assert await ingest_event(db, unknown) is None
             assert (await get_collection(db, fund["id"]))["raised_cents"] == 500
-            # Malformed sender, fractional beyond precision, and ancient event
-            # must not silently inflate a collection.
+            # A receive_with event (often sent with donate score) is also a
+            # confirmed incoming transfer. Missing peer_id may affect donor
+            # count but must not drop confirmed funds.
+            with_donate = {
+                "id": 3, "type": "sweets_log", "date": timestamp,
+                "object": {"id": 991, "type": "receive_with", "amount": 10,
+                           "comment": fund["code"], "peer_id": None,
+                           "date": timestamp},
+            }
+            assert await ingest_event(db, with_donate) == fund["id"]
+            assert (await get_collection(db, fund["id"]))["raised_cents"] == 1500
+            # Fractional amounts beyond supported precision and ancient
+            # transactions must not silently inflate a collection.
             for eid, sender, amount, date in [
-                (3, None, 10, timestamp),
                 (4, 5566, 0.001, timestamp),
                 (5, 5566, 10, timestamp - 86400 * 5),
             ]:
@@ -75,7 +85,7 @@ def test_confirmed_receipts_and_chat_isolation(tmp_path):
                                   "comment": fund["code"], "peer_id": sender,
                                   "date": date}}
                 assert await ingest_event(db, bad) is None
-            assert (await get_collection(db, fund["id"]))["raised_cents"] == 500
+            assert (await get_collection(db, fund["id"]))["raised_cents"] == 1500
             result = await db.one("SELECT COUNT(*) AS n FROM iris_collection_events")
             assert result["n"] == 5
             cursor = await db.one(
@@ -89,3 +99,45 @@ def test_confirmed_receipts_and_chat_isolation(tmp_path):
             await db.close()
 
     asyncio.run(scenario())
+
+
+def test_history_recovers_skipped_receipt_without_double_count(tmp_path, monkeypatch):
+    async def scenario():
+        from app import collections as col
+        db = Database(str(tmp_path / "history.sqlite3"))
+        await db.connect()
+        try:
+            await initialize(db)
+            await db.ensure_chat(-100333, "Чат", "Europe/Moscow", "09:00")
+            campaign = await create_collection(
+                db, -100333, SimpleNamespace(id=77, full_name="Тест"), "На свадьбу", 5
+            )
+            timestamp = int(datetime.now(timezone.utc).timestamp())
+            async def fake_history(bot_id, token):
+                return 200, [
+                    {"id": 901, "type": "receive_with", "amount": 1.0,
+                     "peer_id": 22, "date": timestamp, "comment": campaign["code"]},
+                    {"id": 902, "type": "receive", "amount": 1,
+                     "peer_id": 23, "date": timestamp, "comment": campaign["code"]},
+                ]
+            monkeypatch.setattr(col, "get_iris_history", fake_history)
+            assert await col.recover_zero_collections(db, 1234, "token") == {campaign["id"]}
+            assert (await get_collection(db, campaign["id"]))["raised_cents"] == 200
+            assert await col.recover_zero_collections(db, 1234, "token") == set()
+            assert (await get_collection(db, campaign["id"]))["raised_cents"] == 200
+            # A later delivery of the same update cannot count the receipt again.
+            event = {"id": 50, "type": "sweets_log", "date": timestamp,
+                     "object": {"id": 901, "type": "receive_with", "amount": 1,
+                                "peer_id": 22, "date": timestamp,
+                                "comment": campaign["code"]}}
+            assert await ingest_event(db, event) is None
+            assert (await get_collection(db, campaign["id"]))["raised_cents"] == 200
+        finally:
+            await db.close()
+    asyncio.run(scenario())
+
+
+def test_iris_auth_accepts_full_or_raw_token():
+    from app.collections import iris_auth
+    assert iris_auth(123, "abc") == "123_abc"
+    assert iris_auth(123, "123_abc") == "123_abc"
