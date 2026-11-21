@@ -639,16 +639,33 @@ async def poll_iris(db, bot, bot_id: int, token: str):
                 changed_ids.add(changed)
     except (KeyError, TypeError, ValueError):
         log.exception("Invalid Iris event; cursor was not advanced for the failed event")
-    # Previously skipped incoming events cannot be fetched again using the
-    # advanced cursor. Consult history only for *uncredited* collections.
+    # One history request per cycle. Legacy exact-code recovery is preserved,
+    # but the NEW receipt matcher never relies on comments being preserved.
+    to_delete = []
     try:
-        recovered = await recover_zero_collections(db, bot_id, token)
-        changed_ids.update(recovered)
+        status, history = await get_iris_history(bot_id, token)
+        if status == 200:
+            legacy = await recover_zero_collections(db, bot_id, token, history=history)
+            changed_ids.update(legacy)
+            matched, completed_links = await auto.reconcile(db, history)
+            changed_ids.update(matched)
+            to_delete.extend(completed_links)
+            to_delete.extend(await auto.expire_intents(db))
+        else:
+            log.warning("Iris history API unavailable: HTTP %s", status)
     except (httpx.HTTPError, ValueError, TypeError):
-        log.warning("Iris history reconciliation unavailable; will try again")
+        log.warning("Iris history sync failed; no guessed credits")
+    # Close previously completed campaigns created with the old workflow.
+    changed_ids.update(await auto.close_completed(db))
     for collection_id in changed_ids:
         await update_card(db, bot, await get_collection(db, collection_id), bot_id)
-
+    for chat_id, message_id in to_delete:
+        if not message_id:
+            continue
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except TelegramAPIError:
+            pass
 
 
 async def set_poll_status(db, value: str):
@@ -673,7 +690,7 @@ async def get_iris_history(bot_id: int, token: str) -> tuple[int, list]:
     return 200, data["result"]
 
 
-async def recover_zero_collections(db, bot_id: int, token: str) -> set[int]:
+async def recover_zero_collections(db, bot_id: int, token: str, history=None) -> set[int]:
     """Backfill exact-comment receipts where no event was previously credited.
 
     The previous version skipped some incoming types while advancing its event
@@ -687,9 +704,10 @@ async def recover_zero_collections(db, bot_id: int, token: str) -> set[int]:
     )
     if not rows:
         return set()
-    status, history = await get_iris_history(bot_id, token)
-    if status != 200:
-        return set()
+    if history is None:
+        status, history = await get_iris_history(bot_id, token)
+        if status != 200:
+            return set()
     by_code = {r["code"]: r for r in rows}
     recovered = set()
     for item in history:
@@ -783,224 +801,20 @@ async def collection_status(message: Message, db, settings, bot_id: int):
                     )
                     if inbound and not matches:
                         lines.append(
-                            "⚠️ Входящие есть, но код сбора не совпадает с "
-                            "комментарием Ириса. Не переводите повторно. "
-                            f"Для сверки: /collect_review {row['id']}"
+                            "ℹ️ Iris не передал код сбора. Новые платежи "
+                            "автоматически связываются с персональной заявкой "
+                            "по ID отправителя, сумме и времени."
                         )
+                    pending = await db.one(
+                        """SELECT COUNT(*) AS n FROM iris_payment_intents
+                           WHERE collection_id=? AND status='pending'""",
+                        (row["id"],),
+                    )
+                    lines.append(f"Ожидающих переводов: {pending['n'] if pending else 0}")
                 except (httpx.HTTPError, ValueError, TypeError):
                     lines.append("История Ириса: ошибка соединения")
     await message.answer("\n".join(lines), parse_mode="HTML")
 
-
-
-def receipt_epoch(item: dict) -> float | None:
-    try:
-        epoch = float(item.get("date") or 0)
-        if epoch > 10**11:
-            epoch /= 1000
-        if epoch <= 0:
-            return None
-        return epoch
-    except (ValueError, TypeError, OverflowError):
-        return None
-
-
-def short_date(item: dict) -> str:
-    epoch = receipt_epoch(item)
-    if epoch is None:
-        return "время неизвестно"
-    try:
-        return datetime.fromtimestamp(epoch, timezone.utc).strftime("%d.%m %H:%M UTC")
-    except (OverflowError, OSError, ValueError):
-        return "неверное время"
-
-
-async def receipt_candidate(db, row: dict, item: dict) -> bool:
-    """Only confirmed incoming receipts without another collection's code qualify."""
-    if row["status"] not in ("open", "closed") or not isinstance(item, dict):
-        return False
-    if item.get("type") not in INCOMING_TYPES:
-        return False
-    if not isinstance(item.get("id"), int) or item["id"] <= 0:
-        return False
-    if not inbound_cents(item.get("amount")):
-        return False
-    timestamp = receipt_epoch(item)
-    if timestamp is None:
-        return False
-    if timestamp < datetime.fromisoformat(row["created_at"]).timestamp() - 120:
-        return False
-    if timestamp > datetime.now(timezone.utc).timestamp() + 120:
-        return False
-    previous = await db.one(
-        "SELECT transaction_id FROM iris_collection_recovered WHERE transaction_id=?",
-        (item["id"],),
-    )
-    if previous:
-        return False
-    comment = str(item.get("comment") or "").strip()
-    # Never allow manual reallocations of transfers already labelled
-    # for a collection, even if a different campaign is selected.
-    if comment:
-        known_codes = await db.all("SELECT code FROM iris_collections WHERE code IS NOT NULL")
-        if any(code["code"] in comment for code in known_codes):
-            return False
-    return True
-
-
-async def manual_credit(db, row: dict, item: dict, actor_id: int) -> bool:
-    """Admin-confirmed reconciliation, atomic and once per Iris history ID."""
-    if not await receipt_candidate(db, row, item):
-        return False
-    cents = inbound_cents(item["amount"])
-    sender = item.get("peer_id")
-    sender = sender if isinstance(sender, int) and sender > 0 else None
-    async with db.lock:
-        # Recheck state within the lock and protect against double assignment.
-        async with db.connection.execute(
-            "SELECT status FROM iris_collections WHERE id=?", (row["id"],)
-        ) as cur:
-            actual = await cur.fetchone()
-        if not actual or actual["status"] not in ("open", "closed"):
-            return False
-        cursor = await db.connection.execute(
-            """INSERT OR IGNORE INTO iris_collection_recovered
-               (transaction_id,collection_id,amount_cents,recovered_at)
-               VALUES(?,?,?,?)""",
-            (item["id"], row["id"], cents, now_iso()),
-        )
-        if cursor.rowcount != 1:
-            await db.connection.commit()
-            return False
-        await db.connection.execute(
-            """INSERT INTO iris_collection_manual_audit
-               (transaction_id,collection_id,actor_id,sender_id,amount_cents,recorded_at)
-               VALUES(?,?,?,?,?,?)""",
-            (item["id"], row["id"], actor_id, sender, cents, now_iso()),
-        )
-        await db.connection.execute(
-            "UPDATE iris_collections SET raised_cents=raised_cents+? WHERE id=?",
-            (cents, row["id"]),
-        )
-        await db.connection.commit()
-    return True
-
-
-@router.message(Command("collect_review"), F.chat.type.in_(GROUPS))
-async def review_unmatched(message: Message, db, settings, bot_id: int):
-    """Show uncredited Iris receipts; never auto-allocate anonymous payments."""
-    if not message.from_user or not await is_admin(message, message.from_user.id):
-        await message.answer("Только администратор чата может сверять переводы.")
-        return
-    collection_id = command_id(message)
-    row = await get_collection(db, collection_id, message.chat.id) if collection_id else None
-    if not row:
-        await message.answer("Укажи существующий сбор: /collect_review 1")
-        return
-    if not settings.iris_connect_token:
-        await message.answer("Iris Connect не подключён.")
-        return
-    try:
-        http_status, history = await get_iris_history(bot_id, settings.iris_connect_token)
-    except (httpx.HTTPError, ValueError, TypeError):
-        await message.answer("Ошибка получения истории Ириса. Повтори позже.")
-        return
-    if http_status != 200:
-        await message.answer(f"Iris API вернул HTTP {http_status}.")
-        return
-    candidates = []
-    for item in history:
-        if await receipt_candidate(db, row, item):
-            candidates.append(item)
-        if len(candidates) >= 10:
-            break
-    if not candidates:
-        await message.answer("Не нашлось неподтверждённых переводов для ручной сверки. "
-                             "История ограничена последними 200 записями.")
-        return
-    text_lines = [
-        f"🔎 <b>Сверка сборa №{row['id']}</b>",
-        "Это реальные входящие операции в мешке бота, но их связь со сбором "
-        "<b>не доказана</b>. Не зачисляй чужие переводы.",
-        "Открой историю Ириса, сверяй сумму и время, потом выбери запись.",
-        "Комиссия Ириса может отличаться от суммы отправления.",
-        "",
-    ]
-    keyboard = []
-    for item in candidates:
-        amount = inbound_cents(item["amount"])
-        text_lines.append(
-            f"№{item['id']} · {format_sweets(amount)} 🍬 · {short_date(item)} · "
-            f"комментарий: {'есть, без кода сбора' if str(item.get('comment') or '').strip() else 'пустой'}"
-        )
-        keyboard.append([InlineKeyboardButton(
-            text=f"🔎 Проверить №{item['id']} ({format_sweets(amount)} 🍬)",
-            callback_data=f"ic:review:{row['id']}:{item['id']}",
-        )])
-    await message.answer("\n".join(text_lines), parse_mode="HTML",
-                         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
-
-async def handle_manual_callback(callback: CallbackQuery, db, settings, bot_id: int,
-                                 action: str, collection_id: int, history_id: int):
-    if not await is_admin(callback.message, callback.from_user.id):
-        await callback.answer("Только администратор чата.", show_alert=True)
-        return
-    row = await get_collection(db, collection_id, callback.message.chat.id)
-    if not row:
-        await callback.answer("Сбор не найден.", show_alert=True)
-        return
-    try:
-        status, history = await get_iris_history(bot_id, settings.iris_connect_token)
-    except (httpx.HTTPError, ValueError, TypeError):
-        await callback.answer("Не удалось получить историю.", show_alert=True)
-        return
-    if status != 200:
-        await callback.answer("Ирис недоступен.", show_alert=True)
-        return
-    item = next(
-        (entry for entry in history if isinstance(entry, dict) and entry.get("id") == history_id),
-        None,
-    )
-    if not item or not await receipt_candidate(db, row, item):
-        await callback.answer("Перевод уже учтён, устарел или недоступен.", show_alert=True)
-        return
-    if action == "review":
-        cents = inbound_cents(item["amount"])
-        await callback.message.answer(
-            f"⚠️ <b>Ручная привязка к сбору №{row['id']}</b>\n\n"
-            f"Транзакция Iris: <code>{history_id}</code>\n"
-            f"Сумма: <b>{format_sweets(cents)} 🍬</b>\n"
-            f"Дата: {short_date(item)}\n\n"
-            "<b>Подтверди только если это действительно взнос в этот сбор.</b> "
-            "После подтверждения сумма будет зачтена и повторное зачисление заблокировано.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="✅ Подтверждаю по истории",
-                    callback_data=f"ic:apply:{row['id']}:{history_id}",
-                ),
-                InlineKeyboardButton(text="❌ Отмена", callback_data="ic:cancel"),
-            ]]),
-        )
-        await callback.answer()
-        return
-    if action == "apply":
-        accepted = await manual_credit(db, row, item, callback.from_user.id)
-        if not accepted:
-            await callback.answer("Уже учтено или операция больше недоступна.", show_alert=True)
-            return
-        await update_card(db, callback.bot, await get_collection(db, row["id"]), bot_id)
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except TelegramAPIError:
-            pass
-        await callback.message.answer(
-            f"✅ Взнос {format_sweets(inbound_cents(item['amount']))} 🍬 "
-            f"по операции №{history_id} вручную зачислен в сбор №{row['id']}. "
-            "Операция сохранена в журнале."
-        )
-        await callback.answer()
 
 
 @router.message(Command("collect_pay"), F.chat.type.in_(GROUPS))
