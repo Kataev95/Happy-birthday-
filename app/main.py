@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
             BotCommand(command="collect", description="Создать сбор ирисок в чате"),
             BotCommand(command="collections", description="Список сборов ирисок"),
             BotCommand(command="collect_status", description="Диагностика сборов (для админа)"),
+            BotCommand(command="collect_review", description="Сверка переводов (для админа)"),
         ])
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(
