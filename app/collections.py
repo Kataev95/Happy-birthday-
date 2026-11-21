@@ -268,6 +268,36 @@ async def create_collection(db, chat_id: int, user, title: str, goal: int):
     return await get_collection(db, collection_id)
 
 
+async def send_personal_link(message, db, row, payer, amount: int, bot_id: int):
+    """Record a payment intent for the real Telegram user before revealing URL."""
+    intent_id = await auto.begin_intent(db, row, payer.id, amount)
+    mention = f'<a href="tg://user?id={payer.id}">{html.escape(payer.full_name)}</a>'
+    try:
+        sent = await message.answer(
+            f"💝 {mention}, взнос в сбор <b>№{row['id']}</b>\n"
+            f"🍬 Сумма: <b>{amount}</b>\n\n"
+            "Подтверди перевод в официальном Ирисе. Бот сам проверит "
+            "отправителя, сумму и время, затем обновит сбор.\n"
+            "⌛ Ссылка для учёта активна 15 минут. "
+            "Ею должен пользоваться только тот, кто запросил перевод.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"💝 Перевести {amount} 🍬 через Ирис",
+                    url=iris_link(bot_id, amount, row["code"]))],
+                [InlineKeyboardButton(text="❌ Отменить перевод",
+                                      callback_data=f"ic:stop:{intent_id}")],
+            ]),
+        )
+    except Exception:
+        await auto.cancel_intent(db, intent_id, payer.id)
+        raise
+    await db.execute(
+        "UPDATE iris_payment_intents SET link_message_id=? WHERE id=?",
+        (sent.message_id, intent_id),
+    )
+
+
 @router.message(Command("collect"), F.chat.type.in_(GROUPS))
 async def create_command(message: Message, db, settings, bot_id: int):
     if not message.from_user:
