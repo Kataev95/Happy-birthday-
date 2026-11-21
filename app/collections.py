@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
 from app import iris_autocollect as auto
+from app import iris_donors as donors_ui
 
 import httpx
 from aiogram import F, Router
@@ -147,6 +148,8 @@ def collection_keyboard(row: dict, bot_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="💎 100", callback_data=f"ic:amount:{row['id']}:100"),
              InlineKeyboardButton(text="✏️ Своя сумма", callback_data=f"ic:own:{row['id']}")],
         ])
+    rows.append([InlineKeyboardButton(text="👥 Все участники",
+                                      callback_data=f"ic:donorpage:{row['id']}:0")])
     rows.append([InlineKeyboardButton(text="🔄 Обновить сбор",
                                       callback_data=f"ic:refresh:{row['id']}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -156,7 +159,7 @@ def format_sweets(cents: int) -> str:
     return str(cents // 100) if cents % 100 == 0 else f"{cents / 100:.2f}"
 
 
-def collection_text(row: dict, donors: int) -> str:
+def collection_text(row: dict, donors: int, donor_lines: str = "") -> str:
     raised, goal = row["raised_cents"], row["goal_cents"]
     filled = min(10, raised * 10 // goal)
     bar = "🟩" * filled + "⬜" * (10 - filled)
@@ -175,6 +178,7 @@ def collection_text(row: dict, donors: int) -> str:
         f"💰 Собрано: <b>{format_sweets(raised)} / {format_sweets(goal)} 🍬</b>\n"
         f"{bar} {min(100, raised * 100 // goal)}%\n"
         f"👥 Поддержали: {donors}\n"
+        f"{donor_lines}"
         f"📌 Статус: {status}\n\n" +
         ("<i>Сбор завершён. Спасибо участникам! "
          "Ириски находятся в мешке бота до выплаты организатору.</i>"
@@ -216,13 +220,28 @@ async def donor_count(db, collection_id: int) -> int:
     return int(result["count"])
 
 
+async def refresh_existing_cards(db, bot, bot_id: int):
+    """Migrate old cards containing raw payment URLs to authenticated buttons.
+
+    This is essential: users clicking an old URL never create a pending intent,
+    so automatic reconciliation would otherwise have nothing to match.
+    """
+    rows = await db.all(
+        """SELECT * FROM iris_collections WHERE message_id IS NOT NULL
+           AND status IN ('open','closed') ORDER BY id DESC LIMIT 200"""
+    )
+    for row in rows:
+        await update_card(db, bot, row, bot_id)
+
+
 async def update_card(db, bot, row, bot_id):
     if not row or not row["message_id"]:
         return
     try:
         await bot.edit_message_text(
             chat_id=row["chat_id"], message_id=row["message_id"],
-            text=collection_text(row, await donor_count(db, row["id"])),
+            text=collection_text(row, await donor_count(db, row["id"]),
+                                 await donors_ui.top_donors_text(db, row["id"])),
             reply_markup=collection_keyboard(row, bot_id), parse_mode="HTML",
         )
     except TelegramAPIError as exc:
@@ -271,7 +290,8 @@ async def create_collection(db, chat_id: int, user, title: str, goal: int):
 
 async def send_personal_link(message, db, row, payer, amount: int, bot_id: int):
     """Record a payment intent for the real Telegram user before revealing URL."""
-    intent_id = await auto.begin_intent(db, row, payer.id, amount)
+    intent_id = await auto.begin_intent(db, row, payer.id, amount,
+                                        payer_name=payer.full_name or "Участник")
     mention = f'<a href="tg://user?id={payer.id}">{html.escape(payer.full_name)}</a>'
     try:
         sent = await message.answer(
@@ -363,6 +383,21 @@ def command_id(message: Message):
     return int(raw) if re.fullmatch(r"[1-9][0-9]{0,9}", raw) else None
 
 
+@router.message(Command("collect_donors"), F.chat.type.in_(GROUPS))
+async def list_collection_donors(message: Message, db):
+    collection_id = command_id(message)
+    row = await get_collection(db, collection_id, message.chat.id) if collection_id else None
+    if not row:
+        await message.answer("Сбор не найден. Используй /collect_donors ID.")
+        return
+    participants = await donors_ui.donor_totals(db, row["id"])
+    content, page = donors_ui.donors_page_text(row, participants, 0)
+    await message.answer(
+        content, parse_mode="HTML",
+        reply_markup=donors_ui.donors_markup(row["id"], page, len(participants)),
+    )
+
+
 @router.message(Command("collect_info"), F.chat.type.in_(GROUPS))
 async def info_command(message: Message, db, bot_id: int):
     collection_id = command_id(message)
@@ -370,7 +405,8 @@ async def info_command(message: Message, db, bot_id: int):
     if not row:
         await message.answer("Сбор не найден. Используй /collections.")
         return
-    await message.answer(collection_text(row, await donor_count(db, row["id"])),
+    await message.answer(collection_text(row, await donor_count(db, row["id"]),
+                                         await donors_ui.top_donors_text(db, row["id"])),
                          parse_mode="HTML", reply_markup=collection_keyboard(row, bot_id))
 
 
@@ -430,6 +466,33 @@ async def collection_callback(callback: CallbackQuery, db, settings, bot_id: int
         await callback.answer("Открой сбор в чате.", show_alert=True)
         return
     pieces = (callback.data or "").split(":")
+    if (len(pieces) == 4 and pieces[1] == "donorpage" and
+            pieces[2].isdigit() and pieces[3].isdigit()):
+        row = await get_collection(db, int(pieces[2]), callback.message.chat.id)
+        if not row:
+            await callback.answer("Сбор не найден.", show_alert=True)
+            return
+        participants = await donors_ui.donor_totals(db, row["id"])
+        content, page = donors_ui.donors_page_text(
+            row, participants, min(1000, int(pieces[3])),
+        )
+        # If the callback is on the main collection card, post a separate list;
+        # never overwrite or destroy the original fundraising controls.
+        if callback.message.message_id == row["message_id"]:
+            await callback.message.answer(
+                content, parse_mode="HTML",
+                reply_markup=donors_ui.donors_markup(row["id"], page, len(participants)),
+            )
+        else:
+            try:
+                await callback.message.edit_text(
+                    content, parse_mode="HTML",
+                    reply_markup=donors_ui.donors_markup(row["id"], page, len(participants)),
+                )
+            except TelegramAPIError:
+                pass
+        await callback.answer()
+        return
     if len(pieces) == 3 and pieces[1] == "stop" and pieces[2].isdigit():
         stopped = await auto.cancel_intent(db, int(pieces[2]), callback.from_user.id)
         await callback.answer("Перевод отменён." if stopped else "Ссылка уже использована или устарела.")
