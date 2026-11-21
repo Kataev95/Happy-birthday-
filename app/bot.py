@@ -45,6 +45,7 @@ def panel_markup(username: str, chat_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎂 Мой день рождения", url=app_link(username, chat_id, "b"))],
         [InlineKeyboardButton(text="📅 Календарь", url=app_link(username, chat_id, "c"))],
         [InlineKeyboardButton(text="🎄 Новогодние желания", url=app_link(username, chat_id, "w"))],
+        [InlineKeyboardButton(text="💝 Сборы ирисок", callback_data="ic:help")],
     ])
 
 
