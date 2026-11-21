@@ -20,6 +20,8 @@ from app.wishes import router as wishes_router, initialize as initialize_wishes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger(__name__)
+# httpx INFO may print Iris API URL including the API credential.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 async def iris_poll_loop(db, bot, bot_id: int, token: str):
@@ -52,7 +54,6 @@ async def lifespan(app: FastAPI):
             BotCommand(command="collect", description="Создать сбор ирисок в чате"),
             BotCommand(command="collections", description="Список сборов ирисок"),
             BotCommand(command="collect_status", description="Диагностика сборов (для админа)"),
-            BotCommand(command="collect_review", description="Сверка переводов (для админа)"),
         ])
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(
