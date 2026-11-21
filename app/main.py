@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from app.api import router as api_router
 from app.bot import router as bot_router
 from app.config import Settings
-from app.collections import router as collections_router, initialize as initialize_collections, poll_iris
+from app.collections import (router as collections_router, initialize as initialize_collections,
+                             poll_iris, refresh_existing_cards)
 from app.db import Database
 from app.scheduler import scheduler_loop
 from app.wishes import router as wishes_router, initialize as initialize_wishes
@@ -25,6 +26,12 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 async def iris_poll_loop(db, bot, bot_id: int, token: str):
+    # Replace old raw Iris URLs after every restart, not only when money arrives.
+    # Older messages otherwise bypass the new payer-bound payment intent.
+    try:
+        await refresh_existing_cards(db, bot, bot_id)
+    except Exception:
+        log.exception("Could not migrate previously posted fundraising cards")
     while True:
         if token:
             try:
@@ -53,6 +60,7 @@ async def lifespan(app: FastAPI):
             BotCommand(command="holidays", description="Вызвать кнопки праздников в группе"),
             BotCommand(command="collect", description="Создать сбор ирисок в чате"),
             BotCommand(command="collections", description="Список сборов ирисок"),
+            BotCommand(command="collect_donors", description="Участники и суммы взносов"),
             BotCommand(command="collect_status", description="Диагностика сборов (для админа)"),
         ])
         await bot.set_chat_menu_button(
