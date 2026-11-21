@@ -656,11 +656,28 @@ async def ingest_event(db, event: dict) -> int | None:
                  sender, cents, comment, now_iso(), outcome),
             )
             if outcome == "credited":
-                await db.connection.execute(
-                    "UPDATE iris_collections SET raised_cents=raised_cents+? WHERE id=?",
-                    (cents, collection["id"]),
-                )
-                changed = collection["id"]
+                # The same operation may arrive via getUpdates and the
+                # history endpoint. Register its transaction ID globally.
+                # This prevents a second credit by the intent matcher.
+                if auto.int_id(tx_id):
+                    cursor = await db.connection.execute(
+                        """INSERT OR IGNORE INTO iris_collection_recovered
+                           (transaction_id,collection_id,amount_cents,recovered_at)
+                           VALUES(?,?,?,?)""",
+                        (auto.int_id(tx_id), collection["id"], cents, now_iso()),
+                    )
+                    if cursor.rowcount != 1:
+                        outcome = "already_recovered"
+                        await db.connection.execute(
+                            "UPDATE iris_collection_events SET outcome=? WHERE event_id=?",
+                            (outcome, event_id),
+                        )
+                if outcome == "credited":
+                    await db.connection.execute(
+                        "UPDATE iris_collections SET raised_cents=raised_cents+? WHERE id=?",
+                        (cents, collection["id"]),
+                    )
+                    changed = collection["id"]
         # Persist the cursor with the ledger update, so a restart never doubles credits.
         await db.connection.execute(
             """INSERT INTO iris_collection_meta(key,value) VALUES('cursor',?)
@@ -871,6 +888,16 @@ async def collection_status(message: Message, db, settings, bot_id: int):
                         f"ID отправителя доступен: {with_sender}/{len(inbound)}. "
                         "Для автоматического учёта необходим peer_id отправителя."
                     )
+                    if code == 200:
+                        summary = await auto.match_summary(db, history)
+                        lines.append(
+                            "Автосопоставление: "
+                            f"входящих={summary.get('incoming',0)}, "
+                            f"сумма+отправитель+время={summary.get('valid_candidates',0)}, "
+                            f"нет ID={summary.get('missing_sender',0)}, "
+                            f"отправитель создал заявку={summary.get('sender_has_intent',0)}, "
+                            f"есть сведения о комиссии={summary.get('has_gross',0)}."
+                        )
                     if inbound and not matches:
                         lines.append(
                             "ℹ️ Iris не передал код сбора. Новые платежи "
