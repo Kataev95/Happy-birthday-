@@ -418,7 +418,7 @@ async def collection_callback(callback: CallbackQuery, db, settings, bot_id: int
                 "<code>/collect На свадьбу | 5000</code>\n\n"
                 "📋 Список: /collections\n"
                 "🔒 Закрыть свой: /collect_close ID\n"
-                "Администратор после сверки переводит собранное организатору.",
+                "Взносы учитываются автоматически, без ручной привязки.",
                 parse_mode="HTML",
             )
             await callback.answer()
@@ -428,18 +428,39 @@ async def collection_callback(callback: CallbackQuery, db, settings, bot_id: int
     if not callback.message or callback.message.chat.type not in GROUPS:
         await callback.answer("Открой сбор в чате.", show_alert=True)
         return
-    if (callback.data or "") == "ic:cancel":
-        await callback.answer("Отменено.")
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except TelegramAPIError:
-            pass
-        return
     pieces = (callback.data or "").split(":")
-    if (len(pieces) == 4 and pieces[1] in ("review", "apply")
-            and pieces[2].isdigit() and pieces[3].isdigit()):
-        await handle_manual_callback(callback, db, settings, bot_id, pieces[1],
-                                     int(pieces[2]), int(pieces[3]))
+    if len(pieces) == 3 and pieces[1] == "stop" and pieces[2].isdigit():
+        stopped = await auto.cancel_intent(db, int(pieces[2]), callback.from_user.id)
+        await callback.answer("Перевод отменён." if stopped else "Ссылка уже использована или устарела.")
+        if stopped:
+            try:
+                await callback.message.delete()
+            except TelegramAPIError:
+                pass
+        return
+    if (len(pieces) == 4 and pieces[1] == "amount" and
+            pieces[2].isdigit() and pieces[3].isdigit()):
+        row = await get_collection(db, int(pieces[2]), callback.message.chat.id)
+        if not row or row["status"] != "open":
+            await callback.answer("Сбор закрыт.", show_alert=True)
+            return
+        try:
+            member = await callback.bot.get_chat_member(row["chat_id"], callback.from_user.id)
+            if (member.status in {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}
+                    or (member.status == ChatMemberStatus.RESTRICTED and not member.is_member)):
+                await callback.answer("Только для участников чата.", show_alert=True)
+                return
+        except TelegramAPIError:
+            await callback.answer("Не удалось проверить участие.", show_alert=True)
+            return
+        try:
+            amount = parse_amount(pieces[3])
+            await send_personal_link(callback.message, db, row, callback.from_user,
+                                     amount, bot_id)
+        except ValueError as exc:
+            await callback.answer(str(exc), show_alert=True)
+            return
+        await callback.answer("Персональная кнопка отправлена в чат.")
         return
     if len(pieces) != 3 or not pieces[2].isdigit():
         await callback.answer("Неверная кнопка.", show_alert=True)
@@ -513,14 +534,10 @@ async def custom_amount_reply(message: Message, db, bot_id: int):
     except ValueError as exc:
         await message.answer(str(exc))
         return
-    await message.answer(
-        f"🍬 Взнос {amount} ирисок для сбора #{row['id']}.\n"
-        "Нажми кнопку и подтверди перевод в Ирисе.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=f"💝 Перевести {amount} 🍬",
-                                 url=iris_link(bot_id, amount, row["code"]))
-        ]]),
-    )
+    try:
+        await send_personal_link(message, db, row, message.from_user, amount, bot_id)
+    except ValueError as exc:
+        await message.answer(str(exc))
 
 
 async def ingest_event(db, event: dict) -> int | None:
