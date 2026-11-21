@@ -160,12 +160,16 @@ def receipt_gross_cents(receipt):
         return None
     total = cents_or_zero(details.get("total"))
     fee = cents_or_zero(details.get("fee"))
+    # -1 means malformed or contradictory payment details. Crucially this is
+    # NOT the same as absent details: we must not fall back to a guess.
+    if ("total" in details and total is None) or ("fee" in details and fee is None):
+        return -1
     if total is not None and total > 0:
         if total < net:
-            return None
+            return -1
         # Some Iris responses omit fees; don't reject a valid disclosed total.
         if fee is not None and abs(total - net - fee) > 1:
-            return None
+            return -1
         return total
     if fee is not None:
         return net + fee
@@ -227,7 +231,8 @@ async def match_summary(db, receipts):
             summary["missing_sender"] += 1
             continue
         summary["has_sender"] += 1
-        if receipt_gross_cents(receipt) is not None:
+        if (receipt_gross_cents(receipt) is not None and
+                receipt_gross_cents(receipt) >= 0):
             summary["has_gross"] += 1
         if any(p["payer_id"] == receipt_identity(receipt) for p in intents):
             summary["sender_has_intent"] += 1
