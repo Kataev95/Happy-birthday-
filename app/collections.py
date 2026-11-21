@@ -689,55 +689,52 @@ async def ingest_event(db, event: dict) -> int | None:
 
 
 async def poll_iris(db, bot, bot_id: int, token: str):
-    """Called by the existing background scheduler, not by Mini App."""
+    """Poll BOTH Iris feeds; a getUpdates failure must not block history matching."""
     if not token:
         return
     state = await db.one("SELECT value FROM iris_collection_meta WHERE key='cursor'")
     cursor = int(state["value"]) if state else 0
+    changed_ids, to_delete = set(), []
+    updates_status = "unavailable"
     url = f"{API_ROOT}/{iris_auth(bot_id, token)}/getUpdates"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             reply = await client.get(url, params={"offset": cursor, "limit": 100})
             data = reply.json()
-        if reply.status_code != 200 or not isinstance(data.get("result"), list):
-            # Never log the request URL (it contains the API secret).
-            await set_poll_status(db, f"HTTP {reply.status_code} / error")
-            log.warning("Iris update request unsuccessful: HTTP %s", reply.status_code)
-            return
-    except (httpx.HTTPError, ValueError):
-        await set_poll_status(db, "network / invalid JSON")
-        log.warning("Iris update request failed; will try again")
-        return
-    await set_poll_status(db, f"OK, events={len(data['result'])}")
-    changed_ids = set()
-    try:
-        for event in sorted(data["result"], key=lambda x: int(x["id"])):
-            if int(event["id"]) <= cursor:
-                continue
-            changed = await ingest_event(db, event)
-            cursor = int(event["id"])
-            if changed:
-                changed_ids.add(changed)
-    except (KeyError, TypeError, ValueError):
-        log.exception("Invalid Iris event; cursor was not advanced for the failed event")
-    # One history request per cycle. Legacy exact-code recovery is preserved,
-    # but the NEW receipt matcher never relies on comments being preserved.
-    to_delete = []
+        if reply.status_code == 200 and isinstance(data.get("result"), list):
+            updates_status = f"OK {len(data['result'])}"
+            for event in sorted(data["result"], key=lambda x: int(x["id"])):
+                if int(event["id"]) <= cursor:
+                    continue
+                changed = await ingest_event(db, event)
+                cursor = int(event["id"])
+                if changed:
+                    changed_ids.add(changed)
+        else:
+            updates_status = f"HTTP {reply.status_code}"
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        updates_status = "network / invalid response"
+        log.warning("Iris updates unavailable, trying history instead")
+    history_status = "unavailable"
     try:
         status, history = await get_iris_history(bot_id, token)
         if status == 200:
+            history_status = f"OK {len(history)}"
+            # Exact collection-code backfill is only for legacy payments.
             legacy = await recover_zero_collections(db, bot_id, token, history=history)
             changed_ids.update(legacy)
+            # New payments: sender + amount/gross + time + unique tx ID.
             matched, completed_links = await auto.reconcile(db, history)
             changed_ids.update(matched)
             to_delete.extend(completed_links)
             to_delete.extend(await auto.expire_intents(db))
         else:
-            log.warning("Iris history API unavailable: HTTP %s", status)
+            history_status = f"HTTP {status}"
+            log.warning("Iris sweets history unavailable: HTTP %s", status)
     except (httpx.HTTPError, ValueError, TypeError):
-        log.warning("Iris history sync failed; no guessed credits")
-    # Close previously completed campaigns created with the old workflow.
+        log.warning("Iris history unavailable, no speculative donation credits")
     changed_ids.update(await auto.close_completed(db))
+    await set_poll_status(db, f"events={updates_status}; history={history_status}")
     for collection_id in changed_ids:
         await update_card(db, bot, await get_collection(db, collection_id), bot_id)
     for chat_id, message_id in to_delete:
