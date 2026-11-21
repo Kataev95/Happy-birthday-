@@ -141,3 +141,45 @@ def test_iris_auth_accepts_full_or_raw_token():
     from app.collections import iris_auth
     assert iris_auth(123, "abc") == "123_abc"
     assert iris_auth(123, "123_abc") == "123_abc"
+
+def test_manual_review_reconciles_only_once_and_audits(tmp_path):
+    async def scenario():
+        from app import collections as c
+        db = Database(str(tmp_path / "manual.sqlite3"))
+        await db.connect()
+        try:
+            await initialize(db)
+            await db.ensure_chat(-10044, "Чат", "Europe/Moscow", "09:00")
+            campaign = await create_collection(
+                db, -10044, SimpleNamespace(id=77, full_name="Сборщик"), "На свадьбу", 5
+            )
+            stamp = int(datetime.now(timezone.utc).timestamp())
+            # Real Iris receipt with no collection code. An admin may assign
+            # it only after independently verifying the donor and amount.
+            receipt = {"id": 1234, "type": "receive", "amount": 1,
+                       "date": stamp, "peer_id": 808, "comment": ""}
+            assert await c.receipt_candidate(db, campaign, receipt)
+            assert await c.manual_credit(db, campaign, receipt, actor_id=77)
+            assert (await get_collection(db, campaign["id"]))["raised_cents"] == 100
+            assert await c.donor_count(db, campaign["id"]) == 1
+            assert not await c.manual_credit(db, campaign, receipt, actor_id=77)
+            assert (await get_collection(db, campaign["id"]))["raised_cents"] == 100
+            audit = await db.one(
+                "SELECT * FROM iris_collection_manual_audit WHERE transaction_id=1234"
+            )
+            assert audit["actor_id"] == 77 and audit["sender_id"] == 808
+            # Never reassign a receipt that has an authenticated collection code.
+            tagged = {"id": 1235, "type": "receive", "amount": 1,
+                      "date": stamp, "peer_id": 808, "comment": campaign["code"]}
+            assert not await c.receipt_candidate(db, campaign, tagged)
+            assert not await c.manual_credit(db, campaign, tagged, actor_id=77)
+            # Outgoing transfers and receipts preceding the campaign are not donations.
+            outgoing = {"id": 1236, "type": "send", "amount": 1,
+                        "date": stamp, "peer_id": 808, "comment": ""}
+            assert not await c.receipt_candidate(db, campaign, outgoing)
+            old = {"id": 1237, "type": "receive", "amount": 1,
+                   "date": stamp - 86400, "peer_id": 808, "comment": ""}
+            assert not await c.receipt_candidate(db, campaign, old)
+        finally:
+            await db.close()
+    asyncio.run(scenario())
