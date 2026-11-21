@@ -152,7 +152,7 @@ def test_callback_buttons_generate_intents_instead_of_direct_links(tmp_path):
     assert kb.inline_keyboard[0][0].url is None
     assert kb.inline_keyboard[2][1].callback_data == "ic:own:12"
     row["status"] = "closed"
-    assert len(collection_keyboard(row, 999).inline_keyboard) == 1
+    assert len(collection_keyboard(row, 999).inline_keyboard) == 2
 
 
 def test_auto_intent_reconciliation_and_idempotency(tmp_path):
@@ -207,7 +207,7 @@ def test_auto_intent_reconciliation_and_idempotency(tmp_path):
             assert complete["status"] == "closed"
             assert complete["closed_at"]
             assert "ЦЕЛЬ ДОСТИГНУТА" in collection_text(complete, 1)
-            assert len(collection_keyboard_for_test(complete)) == 1
+            assert len(collection_keyboard_for_test(complete)) == 2
             assert await auto.reconcile(db, [next_receipt]) == (set(), [])
             assert (await get_collection(db, first["id"]))["raised_cents"] == 500
             assert await auto.close_completed(db) == set()
