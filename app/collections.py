@@ -279,7 +279,7 @@ async def send_personal_link(message, db, row, payer, amount: int, bot_id: int):
             f"🍬 Сумма: <b>{amount}</b>\n\n"
             "Подтверди перевод в официальном Ирисе. Бот сам проверит "
             "отправителя, сумму и время, затем обновит сбор.\n"
-            "⌛ Ссылка для учёта активна 15 минут. "
+            "⌛ Ссылка для учёта активна 10 минут. "
             "Ею должен пользоваться только тот, кто запросил перевод.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
