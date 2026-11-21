@@ -14,12 +14,15 @@ from app.api import router as api_router
 from app.bot import router as bot_router
 from app.config import Settings
 from app.collections import router as collections_router, initialize as initialize_collections, poll_iris
+from app.iris_autocollect import initialize as initialize_iris_intents
 from app.db import Database
 from app.scheduler import scheduler_loop
 from app.wishes import router as wishes_router, initialize as initialize_wishes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger(__name__)
+# httpx INFO may print Iris API URL including the API credential.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 async def iris_poll_loop(db, bot, bot_id: int, token: str):
@@ -40,6 +43,7 @@ async def lifespan(app: FastAPI):
     await db.connect()
     await initialize_wishes(db)
     await initialize_collections(db)
+    await initialize_iris_intents(db)
     bot = Bot(settings.bot_token)
     try:
         info = await bot.get_me()
@@ -52,7 +56,6 @@ async def lifespan(app: FastAPI):
             BotCommand(command="collect", description="Создать сбор ирисок в чате"),
             BotCommand(command="collections", description="Список сборов ирисок"),
             BotCommand(command="collect_status", description="Диагностика сборов (для админа)"),
-            BotCommand(command="collect_review", description="Сверка переводов (для админа)"),
         ])
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(
