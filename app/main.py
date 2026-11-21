@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import router as api_router
 from app.bot import router as bot_router
 from app.config import Settings
+from app.collections import router as collections_router, initialize as initialize_collections, poll_iris
 from app.db import Database
 from app.scheduler import scheduler_loop
 from app.wishes import router as wishes_router, initialize as initialize_wishes
@@ -21,12 +22,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger(__name__)
 
 
+async def iris_poll_loop(db, bot, bot_id: int, token: str):
+    while True:
+        if token:
+            try:
+                await poll_iris(db, bot, bot_id, token)
+            except Exception:
+                # A temporary Iris API problem must not interrupt birthdays.
+                log.exception("Iris collection polling failed")
+        await asyncio.sleep(45)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings.from_env()
     db = Database(settings.database_path)
     await db.connect()
     await initialize_wishes(db)
+    await initialize_collections(db)
     bot = Bot(settings.bot_token)
     try:
         info = await bot.get_me()
@@ -36,6 +49,8 @@ async def lifespan(app: FastAPI):
         await bot.set_my_commands([
             BotCommand(command="start", description="Открыть праздничное приложение"),
             BotCommand(command="holidays", description="Вызвать кнопки праздников в группе"),
+            BotCommand(command="collect", description="Создать сбор ирисок в чате"),
+            BotCommand(command="collections", description="Список сборов ирисок"),
         ])
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(
@@ -46,18 +61,23 @@ async def lifespan(app: FastAPI):
         dp["db"] = db
         dp["settings"] = settings
         dp["username"] = info.username
+        dp["bot_id"] = info.id
         dp.include_router(bot_router)
+        dp.include_router(collections_router)
         poll_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
         schedule_task = asyncio.create_task(
             scheduler_loop(db, bot, info.username, settings.check_interval_seconds)
+        )
+        iris_task = asyncio.create_task(
+            iris_poll_loop(db, bot, info.id, settings.iris_connect_token)
         )
         log.info("Happy Birthday started as @%s", info.username)
         try:
             yield
         finally:
-            for task in (poll_task, schedule_task):
+            for task in (poll_task, schedule_task, iris_task):
                 task.cancel()
-            await asyncio.gather(poll_task, schedule_task, return_exceptions=True)
+            await asyncio.gather(poll_task, schedule_task, iris_task, return_exceptions=True)
     finally:
         await bot.session.close()
         await db.close()
