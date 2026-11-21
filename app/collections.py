@@ -25,6 +25,14 @@ router = Router()
 GROUPS = {ChatType.GROUP, ChatType.SUPERGROUP}
 API_ROOT = "https://iris-tg.ru/api/v0.5"
 MAX_AMOUNT = 1_000_000
+INCOMING_TYPES = {"receive", "receive_with"}
+
+
+def iris_auth(bot_id: int, token: str) -> str:
+    # Accept either the raw Iris token or the full {bot_id}_{iris_token}.
+    prefix = f"{bot_id}_"
+    return token if token.startswith(prefix) else prefix + token
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS iris_collections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +64,12 @@ CREATE TABLE IF NOT EXISTS iris_collection_events (
 CREATE TABLE IF NOT EXISTS iris_collection_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS iris_collection_recovered (
+    transaction_id INTEGER PRIMARY KEY,
+    collection_id INTEGER NOT NULL REFERENCES iris_collections(id),
+    amount_cents INTEGER NOT NULL,
+    recovered_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS iris_collection_prompts (
     chat_id INTEGER NOT NULL,
@@ -451,13 +465,13 @@ async def ingest_event(db, event: dict) -> int | None:
             "SELECT 1 FROM iris_collection_events WHERE event_id=?", (event_id,)
         ) as cursor:
             exists = await cursor.fetchone()
-        if isinstance(data, dict) and not exists and data.get("type") == "receive":
+        if isinstance(data, dict) and not exists and data.get("type") in INCOMING_TYPES:
             comment = str(data.get("comment") or "")
             cents = inbound_cents(data.get("amount"))
             sender = data.get("peer_id")
             sender = int(sender) if isinstance(sender, int) and sender > 0 else None
             outcome, collection = "unmatched", None
-            if cents and sender:
+            if cents:
                 async with db.connection.execute(
                     """SELECT * FROM iris_collections WHERE code=? AND status IN ('open','closed')""",
                     (comment,),
@@ -506,18 +520,21 @@ async def poll_iris(db, bot, bot_id: int, token: str):
         return
     state = await db.one("SELECT value FROM iris_collection_meta WHERE key='cursor'")
     cursor = int(state["value"]) if state else 0
-    url = f"{API_ROOT}/{bot_id}_{token}/getUpdates"
+    url = f"{API_ROOT}/{iris_auth(bot_id, token)}/getUpdates"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             reply = await client.get(url, params={"offset": cursor, "limit": 100})
             data = reply.json()
         if reply.status_code != 200 or not isinstance(data.get("result"), list):
             # Never log the request URL (it contains the API secret).
+            await set_poll_status(db, f"HTTP {reply.status_code} / error")
             log.warning("Iris update request unsuccessful: HTTP %s", reply.status_code)
             return
     except (httpx.HTTPError, ValueError):
+        await set_poll_status(db, "network / invalid JSON")
         log.warning("Iris update request failed; will try again")
         return
+    await set_poll_status(db, f"OK, events={len(data['result'])}")
     changed_ids = set()
     try:
         for event in sorted(data["result"], key=lambda x: int(x["id"])):
@@ -529,8 +546,151 @@ async def poll_iris(db, bot, bot_id: int, token: str):
                 changed_ids.add(changed)
     except (KeyError, TypeError, ValueError):
         log.exception("Invalid Iris event; cursor was not advanced for the failed event")
+    # Previously skipped incoming events cannot be fetched again using the
+    # advanced cursor. Consult history only for *uncredited* collections.
+    try:
+        recovered = await recover_zero_collections(db, bot_id, token)
+        changed_ids.update(recovered)
+    except (httpx.HTTPError, ValueError, TypeError):
+        log.warning("Iris history reconciliation unavailable; will try again")
     for collection_id in changed_ids:
         await update_card(db, bot, await get_collection(db, collection_id), bot_id)
+
+
+
+async def set_poll_status(db, value: str):
+    # Expose only an HTTP result or short status, never a token, URL or payload.
+    await db.execute(
+        """INSERT INTO iris_collection_meta(key,value) VALUES('poll_status',?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (f"{now_iso()} | {value[:90]}",),
+    )
+
+
+async def get_iris_history(bot_id: int, token: str) -> tuple[int, list]:
+    url = f"{API_ROOT}/{iris_auth(bot_id, token)}/pocket/sweets/history"
+    async with httpx.AsyncClient(timeout=15) as client:
+        reply = await client.get(url, params={"offset": 0, "limit": 200})
+        try:
+            data = reply.json()
+        except ValueError:
+            data = None
+    if reply.status_code != 200 or not isinstance(data, dict) or not isinstance(data.get("result"), list):
+        return reply.status_code, []
+    return 200, data["result"]
+
+
+async def recover_zero_collections(db, bot_id: int, token: str) -> set[int]:
+    """Backfill exact-comment receipts where no event was previously credited.
+
+    The previous version skipped some incoming types while advancing its event
+    cursor. Reconcile only collections whose TOTAL IS ZERO, to avoid counting
+    existing (legacy) credits twice. Never attribute transfers without a code.
+    """
+    rows = await db.all(
+        """SELECT * FROM iris_collections
+           WHERE raised_cents=0 AND status IN ('open','closed')
+           ORDER BY id DESC LIMIT 25"""
+    )
+    if not rows:
+        return set()
+    status, history = await get_iris_history(bot_id, token)
+    if status != 200:
+        return set()
+    by_code = {r["code"]: r for r in rows}
+    recovered = set()
+    for item in history:
+        if not isinstance(item, dict) or item.get("type") not in INCOMING_TYPES:
+            continue
+        row = by_code.get(str(item.get("comment") or ""))
+        cents = inbound_cents(item.get("amount"))
+        transaction_id = item.get("id")
+        if not row or not cents or not isinstance(transaction_id, int) or transaction_id <= 0:
+            continue
+        try:
+            event_epoch = float(item.get("date") or 0)
+            if event_epoch > 10**11:
+                event_epoch /= 1000
+            if event_epoch < datetime.fromisoformat(row["created_at"]).timestamp() - 120:
+                continue
+        except (ValueError, TypeError, OverflowError):
+            continue
+        # Only campaigns with no earlier credits, and only transaction IDs
+        # not used in previous recoveries, are safe to backfill.
+        async with db.lock:
+            async with db.connection.execute(
+                "SELECT raised_cents FROM iris_collections WHERE id=?", (row["id"],)
+            ) as cursor:
+                current = await cursor.fetchone()
+            # A campaign with history already recovered in this pass can
+            # accept additional distinct records, but legacy credits cannot.
+            if not current or (current["raised_cents"] and row["id"] not in recovered):
+                continue
+            cursor = await db.connection.execute(
+                """INSERT OR IGNORE INTO iris_collection_recovered
+                   (transaction_id,collection_id,amount_cents,recovered_at)
+                   VALUES(?,?,?,?)""",
+                (transaction_id, row["id"], cents, now_iso()),
+            )
+            if cursor.rowcount:
+                await db.connection.execute(
+                    "UPDATE iris_collections SET raised_cents=raised_cents+? WHERE id=?",
+                    (cents, row["id"]),
+                )
+                recovered.add(row["id"])
+            await db.connection.commit()
+    return recovered
+
+
+@router.message(Command("collect_status"), F.chat.type.in_(GROUPS))
+async def collection_status(message: Message, db, settings, bot_id: int):
+    """Admin-only diagnostics with no token, URL, user IDs or secret comments."""
+    if not message.from_user or not await is_admin(message, message.from_user.id):
+        await message.answer("Диагностика доступна администраторам чата.")
+        return
+    state = await db.one("SELECT value FROM iris_collection_meta WHERE key='poll_status'")
+    cursor = await db.one("SELECT value FROM iris_collection_meta WHERE key='cursor'")
+    stats = await db.all(
+        """SELECT outcome,COUNT(*) AS n FROM iris_collection_events
+           GROUP BY outcome"""
+    )
+    recovered = await db.one(
+        "SELECT COUNT(*) AS n FROM iris_collection_recovered"
+    )
+    lines = [
+        "🛠 <b>Диагностика сборов Ириса</b>",
+        f"Токен: {'✅ указан' if settings.iris_connect_token else '❌ отсутствует'}",
+        f"Синхронизация: {html.escape(state['value'] if state else 'нет попыток')}",
+        f"Последнее событие: {cursor['value'] if cursor else 'нет'}",
+        "События: " + (", ".join(
+            f"{html.escape(r['outcome'])}={r['n']}" for r in stats
+        ) or "нет"),
+        f"Восстановлено из истории: {recovered['n'] if recovered else 0}",
+    ]
+    collection_id = command_id(message)
+    if collection_id:
+        row = await get_collection(db, collection_id, message.chat.id)
+        if not row:
+            lines.append("Указанный сбор не найден в этом чате.")
+        else:
+            lines.append(f"Сбор #{row['id']}: {format_sweets(row['raised_cents'])} 🍬")
+            if settings.iris_connect_token:
+                try:
+                    code, history = await get_iris_history(bot_id, settings.iris_connect_token)
+                    inbound = [
+                        x for x in history if isinstance(x, dict)
+                        and x.get("type") in INCOMING_TYPES
+                    ]
+                    matches = [
+                        x for x in inbound if str(x.get("comment") or "") == row["code"]
+                    ]
+                    lines.append(
+                        f"История Ириса: HTTP {code}, входящих={len(inbound)}, "
+                        f"с кодом этого сбора={len(matches)}"
+                    )
+                except (httpx.HTTPError, ValueError, TypeError):
+                    lines.append("История Ириса: ошибка соединения")
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @router.message(Command("collect_pay"), F.chat.type.in_(GROUPS))
@@ -564,7 +724,7 @@ async def admin_payout(message: Message, db, settings, bot_id: int):
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             reply = await client.get(
-                f"{API_ROOT}/{bot_id}_{settings.iris_connect_token}/pocket/sweets/give",
+                f"{API_ROOT}/{iris_auth(bot_id, settings.iris_connect_token)}/pocket/sweets/give",
                 params={"user_id": row["owner_id"], "amount": str(amount),
                         "comment": f"collection_{row['id']}"},
             )
