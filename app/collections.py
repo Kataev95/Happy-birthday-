@@ -471,7 +471,15 @@ async def ingest_event(db, event: dict) -> int | None:
             sender = data.get("peer_id")
             sender = int(sender) if isinstance(sender, int) and sender > 0 else None
             outcome, collection = "unmatched", None
-            if cents:
+            tx_id = data.get("id")
+            if isinstance(tx_id, int):
+                async with db.connection.execute(
+                    "SELECT 1 FROM iris_collection_recovered WHERE transaction_id=?",
+                    (tx_id,),
+                ) as cursor:
+                    if await cursor.fetchone():
+                        outcome = "already_recovered"
+            if cents and outcome != "already_recovered":
                 async with db.connection.execute(
                     """SELECT * FROM iris_collections WHERE code=? AND status IN ('open','closed')""",
                     (comment,),
