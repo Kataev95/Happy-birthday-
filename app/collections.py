@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
 from app import iris_autocollect as auto
+from app import iris_donors as donors_ui
 
 import httpx
 from aiogram import F, Router
@@ -147,6 +148,8 @@ def collection_keyboard(row: dict, bot_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="💎 100", callback_data=f"ic:amount:{row['id']}:100"),
              InlineKeyboardButton(text="✏️ Своя сумма", callback_data=f"ic:own:{row['id']}")],
         ])
+    rows.append([InlineKeyboardButton(text="👥 Все участники",
+                                      callback_data=f"ic:donorpage:{row['id']}:0")])
     rows.append([InlineKeyboardButton(text="🔄 Обновить сбор",
                                       callback_data=f"ic:refresh:{row['id']}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -156,7 +159,7 @@ def format_sweets(cents: int) -> str:
     return str(cents // 100) if cents % 100 == 0 else f"{cents / 100:.2f}"
 
 
-def collection_text(row: dict, donors: int) -> str:
+def collection_text(row: dict, donors: int, donor_lines: str = "") -> str:
     raised, goal = row["raised_cents"], row["goal_cents"]
     filled = min(10, raised * 10 // goal)
     bar = "🟩" * filled + "⬜" * (10 - filled)
@@ -175,6 +178,7 @@ def collection_text(row: dict, donors: int) -> str:
         f"💰 Собрано: <b>{format_sweets(raised)} / {format_sweets(goal)} 🍬</b>\n"
         f"{bar} {min(100, raised * 100 // goal)}%\n"
         f"👥 Поддержали: {donors}\n"
+        f"{donor_lines}"
         f"📌 Статус: {status}\n\n" +
         ("<i>Сбор завершён. Спасибо участникам! "
          "Ириски находятся в мешке бота до выплаты организатору.</i>"
@@ -216,13 +220,28 @@ async def donor_count(db, collection_id: int) -> int:
     return int(result["count"])
 
 
+async def refresh_existing_cards(db, bot, bot_id: int):
+    """Migrate old cards containing raw payment URLs to authenticated buttons.
+
+    This is essential: users clicking an old URL never create a pending intent,
+    so automatic reconciliation would otherwise have nothing to match.
+    """
+    rows = await db.all(
+        """SELECT * FROM iris_collections WHERE message_id IS NOT NULL
+           AND status IN ('open','closed') ORDER BY id DESC LIMIT 200"""
+    )
+    for row in rows:
+        await update_card(db, bot, row, bot_id)
+
+
 async def update_card(db, bot, row, bot_id):
     if not row or not row["message_id"]:
         return
     try:
         await bot.edit_message_text(
             chat_id=row["chat_id"], message_id=row["message_id"],
-            text=collection_text(row, await donor_count(db, row["id"])),
+            text=collection_text(row, await donor_count(db, row["id"]),
+                                 await donors_ui.top_donors_text(db, row["id"])),
             reply_markup=collection_keyboard(row, bot_id), parse_mode="HTML",
         )
     except TelegramAPIError as exc:
@@ -271,7 +290,8 @@ async def create_collection(db, chat_id: int, user, title: str, goal: int):
 
 async def send_personal_link(message, db, row, payer, amount: int, bot_id: int):
     """Record a payment intent for the real Telegram user before revealing URL."""
-    intent_id = await auto.begin_intent(db, row, payer.id, amount)
+    intent_id = await auto.begin_intent(db, row, payer.id, amount,
+                                        payer_name=payer.full_name or "Участник")
     mention = f'<a href="tg://user?id={payer.id}">{html.escape(payer.full_name)}</a>'
     try:
         sent = await message.answer(
@@ -363,6 +383,21 @@ def command_id(message: Message):
     return int(raw) if re.fullmatch(r"[1-9][0-9]{0,9}", raw) else None
 
 
+@router.message(Command("collect_donors"), F.chat.type.in_(GROUPS))
+async def list_collection_donors(message: Message, db):
+    collection_id = command_id(message)
+    row = await get_collection(db, collection_id, message.chat.id) if collection_id else None
+    if not row:
+        await message.answer("Сбор не найден. Используй /collect_donors ID.")
+        return
+    participants = await donors_ui.donor_totals(db, row["id"])
+    content, page = donors_ui.donors_page_text(row, participants, 0)
+    await message.answer(
+        content, parse_mode="HTML",
+        reply_markup=donors_ui.donors_markup(row["id"], page, len(participants)),
+    )
+
+
 @router.message(Command("collect_info"), F.chat.type.in_(GROUPS))
 async def info_command(message: Message, db, bot_id: int):
     collection_id = command_id(message)
@@ -370,7 +405,8 @@ async def info_command(message: Message, db, bot_id: int):
     if not row:
         await message.answer("Сбор не найден. Используй /collections.")
         return
-    await message.answer(collection_text(row, await donor_count(db, row["id"])),
+    await message.answer(collection_text(row, await donor_count(db, row["id"]),
+                                         await donors_ui.top_donors_text(db, row["id"])),
                          parse_mode="HTML", reply_markup=collection_keyboard(row, bot_id))
 
 
@@ -430,6 +466,33 @@ async def collection_callback(callback: CallbackQuery, db, settings, bot_id: int
         await callback.answer("Открой сбор в чате.", show_alert=True)
         return
     pieces = (callback.data or "").split(":")
+    if (len(pieces) == 4 and pieces[1] == "donorpage" and
+            pieces[2].isdigit() and pieces[3].isdigit()):
+        row = await get_collection(db, int(pieces[2]), callback.message.chat.id)
+        if not row:
+            await callback.answer("Сбор не найден.", show_alert=True)
+            return
+        participants = await donors_ui.donor_totals(db, row["id"])
+        content, page = donors_ui.donors_page_text(
+            row, participants, min(1000, int(pieces[3])),
+        )
+        # If the callback is on the main collection card, post a separate list;
+        # never overwrite or destroy the original fundraising controls.
+        if callback.message.message_id == row["message_id"]:
+            await callback.message.answer(
+                content, parse_mode="HTML",
+                reply_markup=donors_ui.donors_markup(row["id"], page, len(participants)),
+            )
+        else:
+            try:
+                await callback.message.edit_text(
+                    content, parse_mode="HTML",
+                    reply_markup=donors_ui.donors_markup(row["id"], page, len(participants)),
+                )
+            except TelegramAPIError:
+                pass
+        await callback.answer()
+        return
     if len(pieces) == 3 and pieces[1] == "stop" and pieces[2].isdigit():
         stopped = await auto.cancel_intent(db, int(pieces[2]), callback.from_user.id)
         await callback.answer("Перевод отменён." if stopped else "Ссылка уже использована или устарела.")
@@ -593,11 +656,28 @@ async def ingest_event(db, event: dict) -> int | None:
                  sender, cents, comment, now_iso(), outcome),
             )
             if outcome == "credited":
-                await db.connection.execute(
-                    "UPDATE iris_collections SET raised_cents=raised_cents+? WHERE id=?",
-                    (cents, collection["id"]),
-                )
-                changed = collection["id"]
+                # The same operation may arrive via getUpdates and the
+                # history endpoint. Register its transaction ID globally.
+                # This prevents a second credit by the intent matcher.
+                if auto.int_id(tx_id):
+                    cursor = await db.connection.execute(
+                        """INSERT OR IGNORE INTO iris_collection_recovered
+                           (transaction_id,collection_id,amount_cents,recovered_at)
+                           VALUES(?,?,?,?)""",
+                        (auto.int_id(tx_id), collection["id"], cents, now_iso()),
+                    )
+                    if cursor.rowcount != 1:
+                        outcome = "already_recovered"
+                        await db.connection.execute(
+                            "UPDATE iris_collection_events SET outcome=? WHERE event_id=?",
+                            (outcome, event_id),
+                        )
+                if outcome == "credited":
+                    await db.connection.execute(
+                        "UPDATE iris_collections SET raised_cents=raised_cents+? WHERE id=?",
+                        (cents, collection["id"]),
+                    )
+                    changed = collection["id"]
         # Persist the cursor with the ledger update, so a restart never doubles credits.
         await db.connection.execute(
             """INSERT INTO iris_collection_meta(key,value) VALUES('cursor',?)
@@ -609,55 +689,52 @@ async def ingest_event(db, event: dict) -> int | None:
 
 
 async def poll_iris(db, bot, bot_id: int, token: str):
-    """Called by the existing background scheduler, not by Mini App."""
+    """Poll BOTH Iris feeds; a getUpdates failure must not block history matching."""
     if not token:
         return
     state = await db.one("SELECT value FROM iris_collection_meta WHERE key='cursor'")
     cursor = int(state["value"]) if state else 0
+    changed_ids, to_delete = set(), []
+    updates_status = "unavailable"
     url = f"{API_ROOT}/{iris_auth(bot_id, token)}/getUpdates"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             reply = await client.get(url, params={"offset": cursor, "limit": 100})
             data = reply.json()
-        if reply.status_code != 200 or not isinstance(data.get("result"), list):
-            # Never log the request URL (it contains the API secret).
-            await set_poll_status(db, f"HTTP {reply.status_code} / error")
-            log.warning("Iris update request unsuccessful: HTTP %s", reply.status_code)
-            return
-    except (httpx.HTTPError, ValueError):
-        await set_poll_status(db, "network / invalid JSON")
-        log.warning("Iris update request failed; will try again")
-        return
-    await set_poll_status(db, f"OK, events={len(data['result'])}")
-    changed_ids = set()
-    try:
-        for event in sorted(data["result"], key=lambda x: int(x["id"])):
-            if int(event["id"]) <= cursor:
-                continue
-            changed = await ingest_event(db, event)
-            cursor = int(event["id"])
-            if changed:
-                changed_ids.add(changed)
-    except (KeyError, TypeError, ValueError):
-        log.exception("Invalid Iris event; cursor was not advanced for the failed event")
-    # One history request per cycle. Legacy exact-code recovery is preserved,
-    # but the NEW receipt matcher never relies on comments being preserved.
-    to_delete = []
+        if reply.status_code == 200 and isinstance(data, dict) and isinstance(data.get("result"), list):
+            updates_status = f"OK {len(data['result'])}"
+            for event in sorted(data["result"], key=lambda x: int(x["id"])):
+                if int(event["id"]) <= cursor:
+                    continue
+                changed = await ingest_event(db, event)
+                cursor = int(event["id"])
+                if changed:
+                    changed_ids.add(changed)
+        else:
+            updates_status = f"HTTP {reply.status_code}"
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        updates_status = "network / invalid response"
+        log.warning("Iris updates unavailable, trying history instead")
+    history_status = "unavailable"
     try:
         status, history = await get_iris_history(bot_id, token)
         if status == 200:
+            history_status = f"OK {len(history)}"
+            # Exact collection-code backfill is only for legacy payments.
             legacy = await recover_zero_collections(db, bot_id, token, history=history)
             changed_ids.update(legacy)
+            # New payments: sender + amount/gross + time + unique tx ID.
             matched, completed_links = await auto.reconcile(db, history)
             changed_ids.update(matched)
             to_delete.extend(completed_links)
             to_delete.extend(await auto.expire_intents(db))
         else:
-            log.warning("Iris history API unavailable: HTTP %s", status)
+            history_status = f"HTTP {status}"
+            log.warning("Iris sweets history unavailable: HTTP %s", status)
     except (httpx.HTTPError, ValueError, TypeError):
-        log.warning("Iris history sync failed; no guessed credits")
-    # Close previously completed campaigns created with the old workflow.
+        log.warning("Iris history unavailable, no speculative donation credits")
     changed_ids.update(await auto.close_completed(db))
+    await set_poll_status(db, f"events={updates_status}; history={history_status}")
     for collection_id in changed_ids:
         await update_card(db, bot, await get_collection(db, collection_id), bot_id)
     for chat_id, message_id in to_delete:
@@ -802,12 +879,22 @@ async def collection_status(message: Message, db, settings, bot_id: int):
                     )
                     with_sender = sum(
                         1 for item in inbound
-                        if type(item.get("peer_id")) is int and item["peer_id"] > 0
+                        if auto.receipt_identity(item) is not None
                     )
                     lines.append(
                         f"ID отправителя доступен: {with_sender}/{len(inbound)}. "
                         "Для автоматического учёта необходим peer_id отправителя."
                     )
+                    if code == 200:
+                        summary = await auto.match_summary(db, history)
+                        lines.append(
+                            "Автосопоставление: "
+                            f"входящих={summary.get('incoming',0)}, "
+                            f"сумма+отправитель+время={summary.get('valid_candidates',0)}, "
+                            f"нет ID={summary.get('missing_sender',0)}, "
+                            f"отправитель создал заявку={summary.get('sender_has_intent',0)}, "
+                            f"есть сведения о комиссии={summary.get('has_gross',0)}."
+                        )
                     if inbound and not matches:
                         lines.append(
                             "ℹ️ Iris не передал код сбора. Новые платежи "
@@ -820,6 +907,16 @@ async def collection_status(message: Message, db, settings, bot_id: int):
                         (row["id"],),
                     )
                     lines.append(f"Ожидающих переводов: {pending['n'] if pending else 0}")
+                    completed = await db.one(
+                        """SELECT COUNT(*) AS n,COALESCE(SUM(received_cents),0) AS cents
+                           FROM iris_payment_intents
+                           WHERE collection_id=? AND status='matched'""",
+                        (row["id"],),
+                    )
+                    lines.append(
+                        f"Автоматически зачтено: {completed['n']} переводов, "
+                        f"{format_sweets(completed['cents'])} 🍬."
+                    )
                 except (httpx.HTTPError, ValueError, TypeError):
                     lines.append("История Ириса: ошибка соединения")
     await message.answer("\n".join(lines), parse_mode="HTML")
