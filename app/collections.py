@@ -175,7 +175,7 @@ def collection_text(row: dict, donors: int) -> str:
         f"💰 Собрано: <b>{format_sweets(raised)} / {format_sweets(goal)} 🍬</b>\n"
         f"{bar} {min(100, raised * 100 // goal)}%\n"
         f"👥 Поддержали: {donors}\n"
-        f"📌 Статус: {status}\n\n"
+        f"📌 Статус: {status}\n\n" +
         ("<i>Сбор завершён. Спасибо участникам! "
          "Ириски находятся в мешке бота до выплаты организатору.</i>"
          if row["status"] != "open" else
