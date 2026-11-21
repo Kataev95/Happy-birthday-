@@ -242,10 +242,16 @@ async def reconcile(db, history: list):
     A missing peer_id, unexpected amount, or more than one receipt matching
     the same intent is not safe to attribute automatically. No manual credit.
     """
+    # Recover a transfer already paid while the matching logic was outdated,
+    # even if its 10-minute intent has since expired. Only transactions whose
+    # actual Iris timestamp falls WITHIN that original window may be credited.
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
     intents = await db.all(
         """SELECT p.*,c.code AS collection_code FROM iris_payment_intents p
            JOIN iris_collections c ON c.id=p.collection_id
-           WHERE p.status='pending' ORDER BY p.created_at,p.id"""
+           WHERE p.status IN ('pending','expired') AND p.created_at>=?
+           ORDER BY p.created_at,p.id""",
+        (cutoff,),
     )
     if not intents:
         return set(), []
@@ -289,7 +295,7 @@ async def reconcile(db, history: list):
                 "SELECT * FROM iris_collections WHERE id=?", (pending["collection_id"],)
             ) as cur:
                 fundraiser = await cur.fetchone()
-            if (previously_counted or not current or current["status"] != "pending"
+            if (previously_counted or not current or current["status"] not in ("pending","expired")
                     or not fundraiser or fundraiser["status"] not in ("open", "closed")):
                 continue
             if not valid_match(current, receipt):
@@ -306,7 +312,7 @@ async def reconcile(db, history: list):
             cur = await db.connection.execute(
                 """UPDATE iris_payment_intents
                    SET status='matched',transaction_id=?,received_cents=?,matched_at=?
-                   WHERE id=? AND status='pending'""",
+                   WHERE id=? AND status IN ('pending','expired')""",
                 (tx_id, cents, col.now_iso(), current["id"]),
             )
             if cur.rowcount != 1:
