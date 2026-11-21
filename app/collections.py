@@ -800,6 +800,14 @@ async def collection_status(message: Message, db, settings, bot_id: int):
                         f"История Ириса: HTTP {code}, входящих={len(inbound)}, "
                         f"с кодом этого сбора={len(matches)}"
                     )
+                    with_sender = sum(
+                        1 for item in inbound
+                        if type(item.get("peer_id")) is int and item["peer_id"] > 0
+                    )
+                    lines.append(
+                        f"ID отправителя доступен: {with_sender}/{len(inbound)}. "
+                        "Для автоматического учёта необходим peer_id отправителя."
+                    )
                     if inbound and not matches:
                         lines.append(
                             "ℹ️ Iris не передал код сбора. Новые платежи "
