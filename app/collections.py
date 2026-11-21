@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
+from app import iris_autocollect as auto
+
 import httpx
 from aiogram import F, Router
 from aiogram.enums import ChatMemberStatus, ChatType
@@ -133,14 +135,15 @@ def iris_link(bot_id: int, amount: int, code: str) -> str:
 
 
 def collection_keyboard(row: dict, bot_id: int) -> InlineKeyboardMarkup:
+    # These are authenticated callbacks, NOT direct Iris URLs.
     rows = []
-    if row["status"] == "open":
+    if row["status"] == "open" and row["raised_cents"] < row["goal_cents"]:
         rows.extend([
-            [InlineKeyboardButton(text="🍬 1", url=iris_link(bot_id, 1, row["code"])),
-             InlineKeyboardButton(text="🍬 5", url=iris_link(bot_id, 5, row["code"]))],
-            [InlineKeyboardButton(text="🍬 10", url=iris_link(bot_id, 10, row["code"])),
-             InlineKeyboardButton(text="🍬 50", url=iris_link(bot_id, 50, row["code"]))],
-            [InlineKeyboardButton(text="💎 100", url=iris_link(bot_id, 100, row["code"])),
+            [InlineKeyboardButton(text="🍬 1", callback_data=f"ic:amount:{row['id']}:1"),
+             InlineKeyboardButton(text="🍬 5", callback_data=f"ic:amount:{row['id']}:5")],
+            [InlineKeyboardButton(text="🍬 10", callback_data=f"ic:amount:{row['id']}:10"),
+             InlineKeyboardButton(text="🍬 50", callback_data=f"ic:amount:{row['id']}:50")],
+            [InlineKeyboardButton(text="💎 100", callback_data=f"ic:amount:{row['id']}:100"),
              InlineKeyboardButton(text="✏️ Своя сумма", callback_data=f"ic:own:{row['id']}")],
         ])
     rows.append([InlineKeyboardButton(text="🔄 Обновить сбор",
