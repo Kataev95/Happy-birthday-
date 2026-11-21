@@ -58,7 +58,7 @@ async def begin_intent(db, row: dict, payer_id: int, amount: int, payer_name: st
     now = datetime.now(timezone.utc)
     created, expires = now.isoformat(), (
         now + timedelta(minutes=INTENT_TTL_MINUTES)).isoformat()
-    safe_name = (payer_name or "Участник").strip()[:70] or "Участник"
+    safe_name = " ".join((payer_name or "Участник").split())[:70] or "Участник"
     async with db.lock:
         # Keep a newly requested intent separate from older expired ones.
         await db.connection.execute(
@@ -218,10 +218,13 @@ def valid_match(intent, receipt):
 
 async def match_summary(db, receipts):
     """Safe aggregate diagnostics: no raw user IDs, tokens or transaction texts."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
     intents = await db.all(
         """SELECT p.*,c.code AS collection_code FROM iris_payment_intents p
            JOIN iris_collections c ON c.id=p.collection_id
-           WHERE p.status='pending'""")
+           WHERE p.status IN ('pending','expired') AND p.created_at>=?""",
+        (cutoff,),
+    )
     summary = Counter()
     for receipt in receipts:
         if not isinstance(receipt, dict) or receipt.get("type") not in col.INCOMING_TYPES:
