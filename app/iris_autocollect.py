@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from app import collections as col
 
 log = logging.getLogger(__name__)
-INTENT_TTL_MINUTES = 15
+INTENT_TTL_MINUTES = 10
 AMOUNT_FEE_TOLERANCE_CENTS = 100  # observed Iris fee: 5 sent -> 4 received
 
 SCHEMA = """
@@ -130,7 +130,7 @@ def valid_match(intent, receipt):
         return False
     created = datetime.fromisoformat(intent["created_at"]).timestamp()
     expires = datetime.fromisoformat(intent["expires_at"]).timestamp()
-    return created - 5 <= ts <= expires + 60
+    return created - 1 <= ts <= expires + 60
 
 
 async def reconcile(db, history: list):
@@ -169,7 +169,7 @@ async def reconcile(db, history: list):
             ) as cur:
                 fundraiser = await cur.fetchone()
             if (seen or not current or current["status"] != "pending"
-                    or not fundraiser or fundraiser["status"] != "open"):
+                    or not fundraiser or fundraiser["status"] not in ("open", "closed")):
                 continue
             if not valid_match(current, receipt):
                 continue
@@ -195,7 +195,7 @@ async def reconcile(db, history: list):
                 continue
             await db.connection.execute(
                 """UPDATE iris_collections SET raised_cents=raised_cents+?
-                   WHERE id=? AND status='open'""",
+                   WHERE id=? AND status IN ('open','closed')""",
                 (cents, current["collection_id"]),
             )
             # Close when at or above goal. Do NOT initiate payout without a
