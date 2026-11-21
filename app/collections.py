@@ -164,8 +164,11 @@ def collection_text(row: dict, donors: int) -> str:
     status = {"open": "🟢 Принимает взносы", "closed": "🔒 Закрыт",
               "paying": "⏳ Выплата", "paid": "✅ Выплачен",
               "review": "⚠️ Проверка выплаты"}[row["status"]]
+    completed = row["raised_cents"] >= row["goal_cents"]
+    completion = "🏆 <b>ЦЕЛЬ ДОСТИГНУТА!</b>\n" if completed else ""
     return (
         f"💝 <b>СБОР ИРИСОК №{row['id']}</b>\n\n"
+        f"{completion}"
         f"🎯 <b>{html.escape(row['title'])}</b>\n"
         f"👤 Организатор: {owner}\n"
         f"💰 Собрано: <b>{format_sweets(raised)} / {format_sweets(goal)} 🍬</b>\n"
@@ -200,8 +203,12 @@ async def donor_count(db, collection_id: int) -> int:
              SELECT sender_id AS donor_id
                FROM iris_collection_manual_audit
               WHERE collection_id=? AND sender_id IS NOT NULL
+             UNION
+             SELECT payer_id AS donor_id
+               FROM iris_payment_intents
+              WHERE collection_id=? AND status='matched'
            )""",
-        (collection_id, collection_id),
+        (collection_id, collection_id, collection_id),
     )
     return int(result["count"])
 
