@@ -168,8 +168,32 @@ def collection_text(row: dict, donors: int, donor_lines: str = "") -> str:
     status = {"open": "🟢 Принимает взносы", "closed": "🔒 Закрыт",
               "paying": "⏳ Выплата", "paid": "✅ Выплачен",
               "review": "⚠️ Проверка выплаты"}[row["status"]]
-    completed = row["raised_cents"] >= row["goal_cents"]
+    completed = raised >= goal
     completion = "🏆 <b>ЦЕЛЬ ДОСТИГНУТА!</b>\n" if completed else ""
+    if row["status"] == "open":
+        footer = (
+            "Нажми сумму и подтверди перевод в официальном Ирисе.\n"
+            "⏳ <b>Учёт не мгновенный:</b> обычно до минуты, "
+            "иногда дольше из-за API Ириса.\n"
+            "<i>Не отправляй повторный перевод, если сумма сразу не изменилась. "
+            "Учитывается фактически поступившая сумма после комиссии.</i>"
+        )
+    elif row["status"] == "closed":
+        footer = (
+            "✅ Сбор завершён. Ириски находятся в мешке бота.\n"
+            "💸 <b>Получатель выплаты:</b> организатор сбора.\n"
+            f"Администратор чата может выполнить <code>/collect_pay {row['id']}</code> "
+            "через 24 часа после закрытия."
+        )
+    elif row["status"] == "paid":
+        footer = "✅ <b>Собранные ириски отправлены организатору.</b>"
+    elif row["status"] == "paying":
+        footer = "⏳ Перевод организатору выполняется. Не повторяйте команду."
+    else:
+        footer = (
+            "⚠️ Результат выплаты не определён. Нельзя повторять её, "
+            "пока администратор не проверит историю Ириса."
+        )
     return (
         f"💝 <b>СБОР ИРИСОК №{row['id']}</b>\n\n"
         f"{completion}"
@@ -179,15 +203,9 @@ def collection_text(row: dict, donors: int, donor_lines: str = "") -> str:
         f"{bar} {min(100, raised * 100 // goal)}%\n"
         f"👥 Поддержали: {donors}\n"
         f"{donor_lines}"
-        f"📌 Статус: {status}\n\n" +
-        ("<i>Сбор завершён. Спасибо участникам! "
-         "Ириски находятся в мешке бота до выплаты организатору.</i>"
-         if row["status"] != "open" else
-         "Нажми на сумму, получи персональную ссылку и подтверди перевод в Ирисе.\n"
-         "<i>Бот сверяет ID отправителя, сумму и время подтверждённого перевода. "
-         "На сбор поступает сумма после комиссии Ириса.</i>")
+        f"📌 Статус: {status}\n\n"
+        f"{footer}"
     )
-
 
 async def get_collection(db, collection_id: int, chat_id: int | None = None):
     if chat_id is None:
@@ -297,8 +315,10 @@ async def send_personal_link(message, db, row, payer, amount: int, bot_id: int):
         sent = await message.answer(
             f"💝 {mention}, взнос в сбор <b>№{row['id']}</b>\n"
             f"🍬 Сумма: <b>{amount}</b>\n\n"
-            "Подтверди перевод в официальном Ирисе. Бот сам проверит "
-            "отправителя, сумму и время, затем обновит сбор.\n"
+            "Подтверди перевод в официальном Ирисе. Бот проверит "
+            "отправителя, сумму и время.\n"
+            "⏳ Учёт может занять около минуты или больше. "
+            "Если сумма не изменилась сразу, не переводи повторно.\n"
             "⌛ Ссылка для учёта активна 10 минут. "
             "Ею должен пользоваться только тот, кто запросил перевод.",
             parse_mode="HTML",
@@ -923,6 +943,21 @@ async def collection_status(message: Message, db, settings, bot_id: int):
 
 
 
+def parse_payout_id(payload):
+    """Iris OpenAPI describes nested {"result":{"result":<transaction_id>}}.
+
+    Accept both nested and flat responses for backwards-compatible API versions;
+    reject bool, zero and any malformed success payload. Uncertain outcomes go
+    to review and are NEVER retried automatically.
+    """
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("result")
+    if isinstance(value, dict):
+        value = value.get("result")
+    return value if type(value) is int and value > 0 else None
+
+
 @router.message(Command("collect_pay"), F.chat.type.in_(GROUPS))
 async def admin_payout(message: Message, db, settings, bot_id: int):
     """Admin-only, one-shot payout; uncertain API failures never auto-retry."""
@@ -959,8 +994,8 @@ async def admin_payout(message: Message, db, settings, bot_id: int):
                         "comment": f"collection_{row['id']}"},
             )
             payload = reply.json()
-        tx_id = payload.get("result")
-        if reply.status_code != 200 or not isinstance(tx_id, int):
+        tx_id = parse_payout_id(payload)
+        if reply.status_code != 200 or tx_id is None:
             raise ValueError("Unconfirmed Iris payout")
     except (httpx.HTTPError, ValueError, TypeError):
         # The request could have succeeded despite a timeout. Never auto-retry.
