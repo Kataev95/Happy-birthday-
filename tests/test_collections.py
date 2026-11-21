@@ -253,3 +253,39 @@ def test_intent_cancel_and_expiry(tmp_path):
         finally:
             await db.close()
     asyncio.run(scenario())
+
+
+def test_payout_success_shape_and_delay_notice():
+    from app.collections import parse_payout_id, collection_text
+    # OpenAPI defines nested GiveResult, but tolerate older flat result.
+    assert parse_payout_id({"result": {"result": 987654321}}) == 987654321
+    assert parse_payout_id({"result": 123}) == 123
+    for value in (
+        {"result": {"result": 0}},
+        {"result": {"result": True}},
+        {"result": {"other": 2}},
+        {"result": 0},
+        {"error": {"code": 409}},
+        {"result": "text"},
+        None,
+    ):
+        assert parse_payout_id(value) is None
+
+    row = {"id": 3, "status": "open", "raised_cents": 0,
+           "goal_cents": 200, "owner_id": 55, "owner_name": "Организатор",
+           "title": "Проверка"}
+    active = collection_text(row, 0)
+    assert "Учёт не мгновенный" in active
+    assert "Не отправляй повторный перевод" in active
+    row["status"] = "closed"
+    row["raised_cents"] = 200
+    closed = collection_text(row, 1)
+    assert "/collect_pay 3" in closed
+    assert "организатор" in closed
+    row["status"] = "paid"
+    paid = collection_text(row, 1)
+    assert "/collect_pay 3" not in paid
+    assert "отправлены организатору" in paid
+    row["status"] = "review"
+    uncertain = collection_text(row, 1)
+    assert "Нельзя повторять" in uncertain
