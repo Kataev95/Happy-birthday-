@@ -15,6 +15,7 @@ class Settings:
     default_timezone: str = "Europe/Moscow"
     default_birthday_time: str = "09:00"
     check_interval_seconds: int = 45
+    iris_connect_token: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -46,6 +47,7 @@ class Settings:
             default_timezone=timezone,
             default_birthday_time=hhmm,
             check_interval_seconds=max(15, int(os.getenv("CHECK_INTERVAL_SECONDS", "45"))),
+            iris_connect_token=os.getenv("IRIS_CONNECT_TOKEN", "").strip(),
         )
 
 
