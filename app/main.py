@@ -14,7 +14,6 @@ from app.api import router as api_router
 from app.bot import router as bot_router
 from app.config import Settings
 from app.collections import router as collections_router, initialize as initialize_collections, poll_iris
-from app.iris_autocollect import initialize as initialize_iris_intents
 from app.db import Database
 from app.scheduler import scheduler_loop
 from app.wishes import router as wishes_router, initialize as initialize_wishes
@@ -43,7 +42,6 @@ async def lifespan(app: FastAPI):
     await db.connect()
     await initialize_wishes(db)
     await initialize_collections(db)
-    await initialize_iris_intents(db)
     bot = Bot(settings.bot_token)
     try:
         info = await bot.get_me()
